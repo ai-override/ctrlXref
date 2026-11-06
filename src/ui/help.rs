@@ -1,0 +1,52 @@
+//! Help pages: one Markdown document per menu, each shown in a window of its own.
+//!
+//! The pages are the `docs/help/*.md` files, built into the binary so they are there
+//! wherever the executable is copied.
+
+use eframe::egui::{self, Margin, ScrollArea, Ui};
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+
+/// A help page, one per menu that has one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HelpTopic {
+    File,
+    Source,
+    Tools,
+}
+
+impl HelpTopic {
+    pub const ALL: [HelpTopic; 3] = [Self::File, Self::Source, Self::Tools];
+
+    /// The window title.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::File => "ctrlXref Help - File Menu",
+            Self::Source => "ctrlXref Help - Source Menu",
+            Self::Tools => "ctrlXref Help - Tools Menu",
+        }
+    }
+
+    /// The page's Markdown source.
+    fn markdown(self) -> &'static str {
+        match self {
+            Self::File => include_str!("../../docs/help/file.md"),
+            Self::Source => include_str!("../../docs/help/source.md"),
+            Self::Tools => include_str!("../../docs/help/tools.md"),
+        }
+    }
+
+    /// The id of the window that shows this page.
+    pub fn viewport_id(self) -> egui::ViewportId {
+        egui::ViewportId::from_hash_of(("help", self))
+    }
+}
+
+/// Draws the help page `topic` filling `ui`, the root of its window.
+pub fn show(ui: &mut Ui, topic: HelpTopic, cache: &mut CommonMarkCache) {
+    let frame = egui::Frame::central_panel(ui.style()).inner_margin(Margin::symmetric(24, 16));
+    egui::CentralPanel::default_margins().frame(frame).show(ui, |ui| {
+        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            CommonMarkViewer::new().show(ui, cache, topic.markdown());
+        });
+    });
+}

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="demo">
+  <!-- Sample input for ctrlxref -->
+  <variable name="speed" type="REAL">12.5</variable>
+  <variable name="enabled" type="BOOL">true</variable>
+  <group name="axes">
+    <axis id="1">X</axis>
+    <axis id="2">Y</axis>
+  </group>
+</project>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- ctrlXref icon for 16-32 px, where "Ctrl" and "Xref" would not be legible: the keycap with an X. -->
+  <defs>
+    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#7dd3fc"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1.5" width="30" height="29.5" rx="6" fill="#0284c7"/>
+  <rect x="3" y="2" width="26" height="24" rx="4.5" fill="url(#top)"/>
+  <text x="16" y="22.5" text-anchor="middle" font-family="Segoe UI" font-weight="700" font-size="22" fill="#0c4a6e">X</text>
+</svg>
