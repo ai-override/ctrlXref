@@ -1,5 +1,4 @@
 /target
-/samples/*.out.xml
 /debug/
 /xml/
 /.rustc_info.json
