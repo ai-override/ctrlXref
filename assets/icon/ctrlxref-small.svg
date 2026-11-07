@@ -1,12 +1,76 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="32"
+   height="32"
+   viewBox="0 0 32 32"
+   version="1.1"
+   id="svg3"
+   sodipodi:docname="ctrlxref-small.svg"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview3"
+     pagecolor="#505050"
+     bordercolor="#ffffff"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="1"
+     inkscape:deskcolor="#505050"
+     inkscape:zoom="37.03125"
+     inkscape:cx="16"
+     inkscape:cy="16"
+     inkscape:window-width="5120"
+     inkscape:window-height="1387"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg3" />
   <!-- ctrlXref icon for 16-32 px, where "Ctrl" and "Xref" would not be legible: the keycap with an X. -->
-  <defs>
-    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#a5dcf8"/>
-      <stop offset="1" stop-color="#60c5f5"/>
+  <defs
+     id="defs2">
+    <linearGradient
+       id="top"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#a5dcf8"
+         id="stop1" />
+      <stop
+         offset="1"
+         stop-color="#60c5f5"
+         id="stop2" />
     </linearGradient>
   </defs>
-  <rect x="1" y="1.5" width="30" height="29.5" rx="6" fill="#0284c7"/>
-  <rect x="3" y="2" width="26" height="24" rx="4.5" fill="url(#top)"/>
-  <text x="16" y="22.5" text-anchor="middle" font-family="Segoe UI" font-weight="700" font-size="22" fill="#0c4a6e">X</text>
+  <rect
+     x="1"
+     y="1.5"
+     width="30"
+     height="29.5"
+     rx="6"
+     fill="#0284c7"
+     id="rect2" />
+  <rect
+     x="3"
+     y="2"
+     width="26"
+     height="24"
+     rx="4.5"
+     fill="url(#top)"
+     id="rect3" />
+  <text
+     x="15.864979"
+     y="21.095781"
+     text-anchor="middle"
+     font-family="'Segoe UI'"
+     font-weight="700"
+     font-size="18px"
+     fill="#0c4a6e"
+     id="text3">SC</text>
 </svg>

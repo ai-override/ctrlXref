@@ -1,19 +1,113 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="256"
+   height="256"
+   viewBox="0 0 256 256"
+   version="1.1"
+   id="svg6"
+   sodipodi:docname="ctrlxref.svg"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview6"
+     pagecolor="#505050"
+     bordercolor="#ffffff"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="1"
+     inkscape:deskcolor="#505050"
+     inkscape:zoom="4.6289062"
+     inkscape:cx="128"
+     inkscape:cy="128"
+     inkscape:window-width="5120"
+     inkscape:window-height="1387"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg6" />
   <!-- ctrlXref application icon: a light blue Ctrl keycap labelled "Xref". -->
-  <defs>
-    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#a5dcf8"/>
-      <stop offset="1" stop-color="#60c5f5"/>
+  <defs
+     id="defs4">
+    <linearGradient
+       id="top"
+       x1="23.656994"
+       y1="19.159239"
+       x2="23.656994"
+       y2="219.0367"
+       gradientTransform="matrix(1.0592221,0,0,1.0122603,-2.2672352,0.1667471)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#a5dcf8"
+         id="stop1" />
+      <stop
+         offset="1"
+         stop-color="#60c5f5"
+         id="stop2" />
     </linearGradient>
-    <linearGradient id="side" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#38bdf8"/>
-      <stop offset="1" stop-color="#0284c7"/>
+    <linearGradient
+       id="side"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#38bdf8"
+         id="stop3" />
+      <stop
+         offset="1"
+         stop-color="#0284c7"
+         id="stop4" />
     </linearGradient>
   </defs>
   <!-- key body, seen from slightly above: the lower band is its front side -->
-  <rect x="10" y="14" width="236" height="232" rx="42" fill="url(#side)"/>
+  <rect
+     x="10"
+     y="14"
+     width="236"
+     height="232"
+     rx="42"
+     fill="url(#side)"
+     id="rect4" />
   <!-- key top -->
-  <rect x="26" y="20" width="204" height="190" rx="32" fill="url(#top)" stroke="#bae6fd" stroke-width="3"/>
-  <text x="42" y="88" font-family="Segoe UI" font-weight="800" font-size="58" fill="#0c4a6e">Ctrl</text>
-  <text x="128" y="178" text-anchor="middle" font-family="Segoe UI" font-weight="700" font-size="80" fill="#0c4a6e"><tspan fill="#0369a1">X</tspan>ref</text>
+  <rect
+     x="24.324942"
+     y="21.133383"
+     width="208.64632"
+     height="199.18303"
+     rx="32.728832"
+     fill="url(#top)"
+     stroke="#bae6fd"
+     stroke-width="3.10642"
+     id="rect5"
+     style="fill:url(#top)" />
+  <text
+     x="47.409622"
+     y="105.46812"
+     font-family="'Segoe UI'"
+     font-weight="700"
+     font-size="87.2583px"
+     fill="#0c4a6e"
+     id="text5"
+     transform="scale(0.94685017,1.0561333)"
+     style="stroke-width:1.09073">Ctrl</text>
+  <text
+     x="135.1702"
+     y="178.42183"
+     text-anchor="middle"
+     font-family="'Segoe UI'"
+     font-weight="700"
+     font-size="87.2583px"
+     fill="#0c4a6e"
+     id="text6"
+     transform="scale(0.94685017,1.0561333)"
+     style="stroke-width:1.09073"><tspan
+   fill="#0369a1"
+   id="tspan5"
+   style="stroke-width:1.09073">X</tspan>ref</text>
 </svg>
