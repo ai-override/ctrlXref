@@ -69,6 +69,9 @@ const CATEGORY_ATTRIBUTE: &str = "Category";
 /// Name of the localization file whose texts replace `@key` references in the table.
 const STRINGS_FILE: &str = "global.ini";
 
+/// The size of a help window's content when it opens.
+const HELP_SIZE: egui::Vec2 = egui::vec2(760., 720.);
+
 /// How long a notification stays up; errors stay longer.
 const TOAST_TIME: Duration = Duration::from_secs(5);
 const ERROR_TOAST_TIME: Duration = Duration::from_secs(9);
@@ -266,7 +269,7 @@ pub struct CtrlXrefApp {
     started: bool,
     theme: ThemeChoice,
     /// The open help windows.
-    help_open: Vec<HelpTopic>,
+    help_open: Vec<(HelpTopic, Option<egui::Pos2>)>,
     help_cache: CommonMarkCache,
     icon: Option<Arc<IconData>>,
     toasts: Vec<Toast>,
@@ -1356,13 +1359,17 @@ impl CtrlXrefApp {
         });
     }
 
-    /// Shows the help page `topic` in its own window, bringing that window forward when it
-    /// is already open.
+    /// Shows the help page `topic` in its own window, centered on the main window, bringing that
+    /// window forward where it is when it is already open.
     fn show_help(&mut self, topic: HelpTopic) {
-        if self.help_open.contains(&topic) {
+        if self.help_open.iter().any(|(open, _)| *open == topic) {
             self.ctx.send_viewport_cmd_to(topic.viewport_id(), ViewportCommand::Focus);
         } else {
-            self.help_open.push(topic);
+            let position = self.ctx.input(|input| {
+                let main = input.viewport();
+                Some(help_position(main.outer_rect?, main.inner_rect?, HELP_SIZE))
+            });
+            self.help_open.push((topic, position));
         }
     }
 
@@ -1631,13 +1638,18 @@ impl CtrlXrefApp {
     /// Shows each open help page in a native window of its own.
     fn help_windows(&mut self, ctx: &Context) {
         for topic in HelpTopic::ALL {
-            if !self.help_open.contains(&topic) {
+            // Kept from when the window opened, so it stays where the user moves it.
+            let Some(position) = self.help_open.iter().find(|(open, _)| *open == topic).map(|(_, position)| *position)
+            else {
                 continue;
-            }
+            };
             let mut builder = ViewportBuilder::default()
                 .with_title(topic.title())
-                .with_inner_size([760., 720.])
+                .with_inner_size(HELP_SIZE)
                 .with_min_inner_size([400., 300.]);
+            if let Some(position) = position {
+                builder = builder.with_position(position);
+            }
             if let Some(icon) = &self.icon {
                 builder = builder.with_icon(icon.clone());
             }
@@ -1647,7 +1659,7 @@ impl CtrlXrefApp {
                 ui.input(|input| input.viewport().close_requested())
             });
             if close {
-                self.help_open.retain(|open| *open != topic);
+                self.help_open.retain(|(open, _)| *open != topic);
             }
         }
     }
@@ -1688,6 +1700,16 @@ impl eframe::App for CtrlXrefApp {
             self.run(command, frame);
         }
     }
+}
+
+/// Where a help window with content of `size` goes, centered on the main window, given the main
+/// window with its frame (`outer`) and without (`inner`). The help window's frame is taken to be
+/// like the main window's. A window taller than the main one starts at the main window's top
+/// instead of above it, so its title bar stays as reachable.
+fn help_position(outer: egui::Rect, inner: egui::Rect, size: egui::Vec2) -> egui::Pos2 {
+    let framed = size + (outer.size() - inner.size());
+    let centered = outer.center() - framed / 2.;
+    egui::pos2(centered.x, centered.y.max(outer.top()))
 }
 
 /// Whether `game_dir` passes both game folder checks, so its defaults can be extracted.
@@ -2646,6 +2668,34 @@ mod tests {
         <actionmap name="m1"><action name="a"><gamepad input="x"/></action><action name="b"/></actionmap>
         <group><actionmap name="m2"><action name="c"/></actionmap></group>
     </profile>"#;
+
+    #[test]
+    fn help_windows_open_centered_on_the_main_window() {
+        use eframe::egui::{Rect, pos2, vec2};
+        // A frame of 8 at the sides and the bottom, and a 32 high title bar.
+        let frame = |x: f32, y: f32, width: f32, height: f32| {
+            let inner = Rect::from_min_size(pos2(x, y), vec2(width, height));
+            let outer = Rect::from_min_max(inner.min - vec2(8., 32.), inner.max + vec2(8., 8.));
+            (outer, inner)
+        };
+
+        // Taller than the help window, whose frame is taken to be the same size.
+        let (outer, inner) = frame(100., 50., 1200., 900.);
+        let position = super::help_position(outer, inner, vec2(760., 720.));
+        let help = Rect::from_min_size(position, vec2(760., 720.) + vec2(16., 40.));
+        assert_eq!(help.center(), outer.center());
+
+        // Lower than the help window: it starts at the same top, still centered sideways.
+        let (outer, inner) = frame(100., 50., 1200., 400.);
+        let position = super::help_position(outer, inner, vec2(760., 720.));
+        assert_eq!(position.y, outer.top());
+        assert_eq!(position.x + (760. + 16.) / 2., outer.center().x);
+
+        // Narrower: it overlaps both sides evenly.
+        let (outer, inner) = frame(500., 50., 640., 900.);
+        let position = super::help_position(outer, inner, vec2(760., 720.));
+        assert_eq!(position.x + (760. + 16.) / 2., outer.center().x);
+    }
 
     /// A running app, with no window, with a profile and a rebind file from a new temp folder
     /// of its own, which it returns with the rebind file's path.
