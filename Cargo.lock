@@ -649,6 +649,7 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "eframe",
+ "egui",
  "egui_commonmark",
  "egui_extras",
  "image",

@@ -10,6 +10,9 @@ anyhow = "1.0.104"
 # OpenGL (glow) renderer only: no wgpu, so no DirectX. Without "clipboard", copied text stays
 # inside the application and never reaches the system clipboard.
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard"] }
+# Only to get the symbol fonts, which eframe has no feature for. Without them, symbols like the
+# warning sign and the theme button's sun and moon are drawn as empty boxes.
+egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 egui_extras = { version = "0.37.0", default-features = false }
 egui_commonmark = { version = "0.26.0", default-features = false, features = ["pulldown_cmark"] }
 image = { version = "0.25", default-features = false, features = ["ico"] }

@@ -83,3 +83,29 @@ fn setup_fonts(ctx: &egui::Context) {
     fonts.families.insert(FontFamily::Name(theme::HEADING.into()), heading);
     ctx.set_fonts(fonts);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The symbols typed in the code: the warning sign, the theme button's sun and moon, and the
+    /// check mark of the theme menu.
+    const SYMBOLS: [char; 4] = ['⚠', '☀', '🌙', '✔'];
+
+    #[test]
+    fn every_font_family_can_draw_the_symbols() {
+        let ctx = egui::Context::default();
+        setup_fonts(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+
+        let families =
+            [FontFamily::Proportional, FontFamily::Name(BOLD.into()), FontFamily::Name(theme::HEADING.into())];
+        for family in families {
+            let font = egui::FontId::new(14., family.clone());
+            for symbol in SYMBOLS {
+                assert!(ctx.fonts_mut(|fonts| fonts.has_glyph(&font, symbol)), "{family:?} has no {symbol}");
+            }
+        }
+    }
+}
