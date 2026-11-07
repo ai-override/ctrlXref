@@ -36,10 +36,12 @@ Opens a window that lists the game's names for its controls, centered on the mai
 reads `keybinding_localization.xml` next to the open profile, or else
 `<game folder>\Data\Libs\Config\keybinding_localization.xml`.
 
-- The columns are **name**, **localizationString** and **shortLocString**. Their `@key` references
-  are replaced with the English texts of `global.ini`. A reference the game has no text for stays
-  as it is. Few controls have a short name.
-- The same name can be on several devices, such as `button21`. The localized text tells them apart.
+- The columns are **name**, **localizationString**, **shortLocString** and **Device**. Their `@key`
+  references are replaced with the English texts of `global.ini`. A reference the game has no text
+  for stays as it is. Few controls have a short name. **Device** says `joystick` without a number.
+- Of the joysticks, only `joystick2` is listed, since the file repeats the same list for all four
+  and `joystick1` has a typo in it. So their texts say **(Input 2)**. The same name can still be on
+  several devices, such as `a` on the keyboard and the control pad; **Device** tells them apart.
 - Click a column header to sort: ascending, descending, then the file's order. Right-click it to
   choose.
 - Selecting and copying work as in the main table: drag, **Ctrl+A**, **Ctrl+C** and the

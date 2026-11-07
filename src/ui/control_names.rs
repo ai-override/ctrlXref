@@ -11,8 +11,8 @@ pub const TITLE: &str = "ctrlXref - Control Names";
 /// The size of the window's content when it opens.
 pub const SIZE: egui::Vec2 = egui::vec2(760., 720.);
 
-/// The table's columns, named like the file's attributes.
-const COLUMNS: [&str; 3] = ["name", "localizationString", "shortLocString"];
+/// The table's columns: the file's attributes, named like them, and the device.
+const COLUMNS: [&str; 4] = ["name", "localizationString", "shortLocString", "Device"];
 
 /// The id of the window.
 pub fn viewport_id() -> egui::ViewportId {
@@ -38,6 +38,7 @@ impl ControlNamesWindow {
                     (COLUMNS[0].into(), name.name.clone()),
                     (COLUMNS[1].into(), name.localization.clone()),
                     (COLUMNS[2].into(), name.short.clone()),
+                    (COLUMNS[3].into(), name.device.clone()),
                 ],
                 styles: Vec::new(),
             })
@@ -66,20 +67,21 @@ mod tests {
     use super::*;
 
     fn window() -> ControlNamesWindow {
-        let name = |name: &str, localization: &str, short: &str| ControlName {
+        let name = |name: &str, localization: &str, short: &str, device: &str| ControlName {
             name: name.into(),
             localization: localization.into(),
             short: short.into(),
+            device: device.into(),
         };
-        ControlNamesWindow::new(&[name("b", "Bravo", ""), name("a", "Alpha", "A")], None)
+        ControlNamesWindow::new(&[name("b", "Bravo", "", "mouse"), name("a", "Alpha", "A", "joystick")], None)
     }
 
     #[test]
-    fn the_columns_are_name_localization_string_and_short_string() {
+    fn the_columns_are_name_localization_string_short_string_and_device() {
         let window = window();
         assert_eq!(window.table.headers(), COLUMNS);
         let rows: Vec<Vec<String>> = window.table.document_rows().map(|(_, cells)| cells.to_vec()).collect();
-        assert_eq!(rows, [["b", "Bravo", ""], ["a", "Alpha", "A"]]);
+        assert_eq!(rows, [["b", "Bravo", "", "mouse"], ["a", "Alpha", "A", "joystick"]]);
         assert_eq!(window.count, 2);
     }
 }
