@@ -2,8 +2,8 @@
   <!-- ctrlXref icon for 16-32 px, where "Ctrl" and "Xref" would not be legible: the keycap with an X. -->
   <defs>
     <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e0f2fe"/>
-      <stop offset="1" stop-color="#7dd3fc"/>
+      <stop offset="0" stop-color="#a5dcf8"/>
+      <stop offset="1" stop-color="#60c5f5"/>
     </linearGradient>
   </defs>
   <rect x="1" y="1.5" width="30" height="29.5" rx="6" fill="#0284c7"/>
