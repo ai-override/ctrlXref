@@ -294,6 +294,12 @@ impl AttributeTable {
         self.rows.iter().map(|row| (row.source_ix, row.cells.as_slice()))
     }
 
+    /// Each row's source index (into the last `set_rows` slice) and cells, in document order
+    /// whatever the current sort.
+    pub fn document_rows(&self) -> impl Iterator<Item = (usize, &[String])> {
+        self.original.iter().map(|row| (row.source_ix, row.cells.as_slice()))
+    }
+
     fn apply_sort(&mut self) {
         self.rows = self.original.clone();
         let Some((col_ix, sort)) = self.sort else {
@@ -604,6 +610,20 @@ mod tests {
         assert_eq!(table.row_of(0), Some(2));
         assert_eq!(table.row_of(1), Some(0));
         assert_eq!(table.source_of(0), Some(1));
+    }
+
+    #[test]
+    fn document_rows_ignore_the_sort() {
+        let rows = attribute_rows(r#"<m><a n="3"/><a n="1"/><a n="2"/></m>"#);
+        let mut table = AttributeTable::new();
+        table.set_rows(&["n"], &rows);
+        table.set_sort(0, ColumnSort::Ascending);
+
+        let displayed: Vec<usize> = table.displayed_rows().map(|(source_ix, _)| source_ix).collect();
+        assert_eq!(displayed, [1, 2, 0]);
+        let document: Vec<(usize, &str)> =
+            table.document_rows().map(|(source_ix, cells)| (source_ix, cells[0].as_str())).collect();
+        assert_eq!(document, [(0, "3"), (1, "1"), (2, "2")]);
     }
 
     /// Runs `table` headless for a few frames, clicking the header cell of column `col_ix`

@@ -14,7 +14,6 @@ A Windows desktop tool for viewing and editing [Star Citizen](https://robertsspa
 > [!NOTE] 
 > - TODO Update / Fix and integrated Help documentation.
 > - TODO Add a "Reset" button to revert all changes made to the table
-> - TODO Add support for exporting structured .json files
 > - TODO Improvement of the "inline" editing and action modification behavior.
 > - TODO Joystick / pedal etc. real name mapping instead of js1_ js2_ jsn_
 
@@ -26,7 +25,7 @@ A Windows desktop tool for viewing and editing [Star Citizen](https://robertsspa
 - Open the game's current `actionmaps.xml` or any mappings file you exported from the game.
 - Create a blank rebind file that "clears" every binding, for starting from scratch. ***Behavior inside the game UNTESTED***.
 - List unused key combinations and allows "sequential" assignment of them to actions with no keyboard binding.
-- Export the table to a `.csv` file for use in a spreadsheet in the current table sorting order. ***TODO .json export***
+- Export the table to a `.csv` file for use in a spreadsheet in the current table sorting order, or to a structured `.json` file that follows the tree.
 - Switch between ***dark*** and ***light*** themes (Light theme lacking the game styling and feel).
 
 ctrlXref writes only to rebind files. It never changes `Data.p4k` or `defaultProfile.xml`. Saving the current bindings `actionmaps.xml` spawns a Warning as the file will be overwritten by the game engine on configuration modifications.

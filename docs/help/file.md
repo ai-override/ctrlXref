@@ -86,7 +86,7 @@ As...** as well.
 
 After saving, a message offers to show the file: **Open in Explorer** opens its folder in
 File Explorer with the file selected. **Save Rebind Copy As...**, **Create Blank Rebind
-File...** and **Tools > Export to .csv...** offer the same.
+File...**, **Tools > Export to .csv...** and **Tools > Export to .json...** offer the same.
 
 ## Save Rebind Copy As... (Ctrl+Shift+S)
 

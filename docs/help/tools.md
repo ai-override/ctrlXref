@@ -1,7 +1,7 @@
 # Tools menu
 
 The Tools menu finds free keyboard combinations, assigns them to actions that have no
-keyboard binding, and exports the table to a spreadsheet file.
+keyboard binding, and exports the actions to a spreadsheet file or a structured JSON file.
 
 All tools need the profile to be open (**File > Open defaultProfile**).
 
@@ -59,4 +59,20 @@ that folder in File Explorer with the file selected.
   locale, so the spreadsheet splits them into columns. Fields that contain the separator,
   such as several bindings in one cell, are put in quotes.
 - Blank cells, like the profile's `keyboard=" "`, are written empty (`,,` or `;;`).
+- The file is UTF-8 encoded.
+
+## Export to .json...
+
+Saves the actionmaps and their actions as a structured `.json` file. The save dialog works
+like the one of **Export to .csv...**, and suggests the same name with `.json`.
+
+- The file follows the tree on the left: a list of actionmaps, each with its list of actions,
+  in the order of the tree. The table's sort order doesn't affect it.
+- An actionmap has its `name`, its `UILabel` and its `actions`. An action has the table's
+  columns as keys, as shown, with rebinds in their device columns. Several bindings in one
+  cell stay one text, separated by ` | `.
+- Empty values are left out, including blank ones like the profile's `keyboard=" "`, and so
+  is `actions` for an actionmap without actions.
+- Empty rebinds like `kb1_ ` are kept, as in the table: in the game they unbind that device's
+  default.
 - The file is UTF-8 encoded.

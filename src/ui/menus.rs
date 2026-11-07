@@ -22,6 +22,7 @@ pub enum Command {
     ShowUnusedCombos,
     AutofillKeyboard,
     ExportCsv,
+    ExportJson,
     Help(HelpTopic),
     About,
 }
@@ -104,6 +105,7 @@ pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool) -> Option<
         item(ui, "Autofill All Unbound Keyboard Controls", Command::AutofillKeyboard);
         ui.separator();
         item(ui, "Export to .csv...", Command::ExportCsv);
+        item(ui, "Export to .json...", Command::ExportJson);
     });
     ui.menu_button("Help", |ui| {
         item(ui, "File Menu", Command::Help(HelpTopic::File));

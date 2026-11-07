@@ -299,6 +299,7 @@ impl CtrlXrefApp {
             Command::ShowUnusedCombos => self.show_unused_combos(),
             Command::AutofillKeyboard => self.autofill_keyboard(),
             Command::ExportCsv => self.export_csv(frame),
+            Command::ExportJson => self.export_json(frame),
             Command::Help(topic) => self.show_help(topic),
             Command::About => self.about(),
         }
@@ -820,9 +821,38 @@ impl CtrlXrefApp {
             ctrlxref::csv::to_csv(std::iter::once(header.collect()).chain(rows), ctrlxref::csv::list_separator())
         };
         let source = doc.rebind_path.as_deref().unwrap_or(&doc.path);
+        let Some(path) = self.export_dialog(source, "CSV files", "csv", frame).save_file() else {
+            return;
+        };
+        match ctrlxref::csv::save(&csv, &path) {
+            Ok(()) => self.dialogs.push(Dialog::saved(format!("Exported {}", path.display()), &path)),
+            Err(err) => self.notify(Level::Error, format!("{err:#}")),
+        }
+    }
+
+    /// Exports the actionmaps and their actions, nested and in document order like the tree
+    /// whatever the table's sort, to a JSON file picked with a save dialog.
+    fn export_json(&mut self, frame: &eframe::Frame) {
+        let Some(doc) = &self.document else {
+            self.notify(Level::Warning, "Open the profile first (File > Open defaultProfile)");
+            return;
+        };
+        let json = tree_json(&doc.root, &doc.rows, &doc.strings, &self.table.headers(), self.table.document_rows());
+        let source = doc.rebind_path.as_deref().unwrap_or(&doc.path);
+        let Some(path) = self.export_dialog(source, "JSON files", "json", frame).save_file() else {
+            return;
+        };
+        match ctrlxref::json::save(&json, &path) {
+            Ok(()) => self.dialogs.push(Dialog::saved(format!("Exported {}", path.display()), &path)),
+            Err(err) => self.notify(Level::Error, format!("{err:#}")),
+        }
+    }
+
+    /// The save dialog of an export to a `.<extension>` file, suggesting the name of `source`.
+    fn export_dialog(&self, source: &Path, filter: &str, extension: &str, frame: &eframe::Frame) -> rfd::FileDialog {
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Export to .csv")
-            .add_filter("CSV files", &["csv"])
+            .set_title(format!("Export to .{extension}"))
+            .add_filter(filter, &[extension])
             .add_filter("All files", &["*"])
             .set_parent(frame);
         // The game's mappings folder, where its exported mappings are too; else next to the file.
@@ -834,15 +864,9 @@ impl CtrlXrefApp {
             dialog = dialog.set_directory(dir);
         }
         if let Some(stem) = source.file_stem() {
-            dialog = dialog.set_file_name(format!("{}.csv", stem.to_string_lossy()));
+            dialog = dialog.set_file_name(format!("{}.{extension}", stem.to_string_lossy()));
         }
-        let Some(path) = dialog.save_file() else {
-            return;
-        };
-        match ctrlxref::csv::save(&csv, &path) {
-            Ok(()) => self.dialogs.push(Dialog::saved(format!("Exported {}", path.display()), &path)),
-            Err(err) => self.notify(Level::Error, format!("{err:#}")),
-        }
+        dialog
     }
 
     fn close_file(&mut self) {
@@ -1511,6 +1535,54 @@ fn action_key(root: &Element, path: &[usize]) -> Option<(String, String)> {
     Some((name(map), name(action)))
 }
 
+/// The actionmaps at their tree positions as JSON: `{"actionmaps": [{name, UILabel, actions}]}`,
+/// with each action's non-blank cells under their `headers`, in column order. `cells` are the
+/// table's rows in document order, whose source indices point into `rows`. Blank values and
+/// empty `actions` are left out; an actionmap without actions stays, since the tree lists it.
+fn tree_json<'a>(
+    root: &Element,
+    rows: &[Vec<usize>],
+    strings: &Strings,
+    headers: &[String],
+    cells: impl Iterator<Item = (usize, &'a [String])>,
+) -> serde_json::Value {
+    let mut cells = cells.peekable();
+    let mut actionmaps = Vec::new();
+    for map_path in find_actionmaps(root) {
+        let Some(map) = xml_doc::element_at(root, &map_path) else {
+            continue;
+        };
+        let mut object = serde_json::Map::new();
+        let attribute = |name: &str| map.attributes.get(name).map_or("", String::as_str);
+        insert_non_blank(&mut object, "name", attribute("name"));
+        insert_non_blank(&mut object, "UILabel", strings.resolve(attribute("UILabel")));
+
+        let in_map = |(source_ix, _): &(usize, &[String])| {
+            rows.get(*source_ix).and_then(|path| path.split_last()).is_some_and(|(_, parent)| parent == map_path)
+        };
+        let mut actions = Vec::new();
+        while let Some((_, row)) = cells.next_if(in_map) {
+            let mut action = serde_json::Map::new();
+            for (header, value) in headers.iter().zip(row) {
+                insert_non_blank(&mut action, header, value);
+            }
+            actions.push(serde_json::Value::Object(action));
+        }
+        if !actions.is_empty() {
+            object.insert("actions".into(), serde_json::Value::Array(actions));
+        }
+        actionmaps.push(serde_json::Value::Object(object));
+    }
+    serde_json::json!({ "actionmaps": actionmaps })
+}
+
+/// Adds `key` to `object` unless `value` is empty or only whitespace.
+fn insert_non_blank(object: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: &str) {
+    if !value.trim().is_empty() {
+        object.insert(key.into(), value.into());
+    }
+}
+
 /// The table row for each action: its attributes in `COLUMNS` with `@key` references resolved
 /// through `strings`. The profile's device inputs, in attributes or child elements, go into
 /// the read-only Default column separated by [`BINDING_SEPARATOR`]; the device columns only
@@ -2177,6 +2249,62 @@ mod tests {
         <actionmap name="m1"><action name="a"><gamepad input="x"/></action><action name="b"/></actionmap>
         <group><actionmap name="m2"><action name="c"/></actionmap></group>
     </profile>"#;
+
+    /// `profile` as the JSON export, through a table like the app's, with `rebinds` applied.
+    fn exported(profile: &str, rebinds: &str, strings: &Strings) -> serde_json::Value {
+        let profile = xml_doc::from_str(profile).unwrap();
+        let rebinds = read_rebinds(&xml_doc::from_str(rebinds).unwrap());
+        let rows = action_paths(&profile, &find_actionmaps(&profile));
+        let mut table = super::AttributeTable::new();
+        table.set_rows(&super::COLUMNS, &table_rows(&profile, &rows, &rebinds, strings));
+        super::tree_json(&profile, &rows, strings, &table.headers(), table.document_rows())
+    }
+
+    #[test]
+    fn json_export_nests_actions_in_tree_order_and_leaves_out_blanks() {
+        let json = exported(
+            r#"<profile>
+                <actionmap name="m2" UILabel="@ui_map">
+                    <action name="z" UILabel="@ui_z" UIDescription=" " keyboard=" " activationMode="press"/>
+                    <action name="a" joystick="js1_button1"/>
+                </actionmap>
+                <actionmap name="no_actions" UILabel=" "/>
+                <group><actionmap name="m1"><action name="b"/></actionmap></group>
+            </profile>"#,
+            r#"<ActionMaps><actionmap name="m2"><action name="a">
+                <rebind input="kb1_ "/><rebind input="mo1_x"/><rebind input="mo1_y"/>
+            </action></actionmap></ActionMaps>"#,
+            &Strings::parse("ui_map=Map\nui_z=Zed\n"),
+        );
+        assert_eq!(
+            json,
+            serde_json::json!({ "actionmaps": [
+                { "name": "m2", "UILabel": "Map", "actions": [
+                    { "name": "z", "activationMode": "press", "UILabel": "Zed" },
+                    // Empty rebinds stay: they unbind the device's default in the game.
+                    {
+                        "name": "a",
+                        DEFAULT_COLUMN: "js1_button1",
+                        "keyboard": "kb1_ ",
+                        "mouse": "mo1_x | mo1_y",
+                    },
+                ] },
+                { "name": "no_actions" },
+                { "name": "m1", "actions": [{ "name": "b" }] },
+            ] })
+        );
+    }
+
+    #[test]
+    fn json_export_keeps_the_column_order() {
+        let json = exported(
+            r#"<p><actionmap name="m"><action UILabel="L" activationMode="press" name="a" mouse="mo1_x"/></actionmap></p>"#,
+            "<ActionMaps/>",
+            &Strings::default(),
+        );
+        let keys: Vec<&String> = json["actionmaps"][0]["actions"][0].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["name", DEFAULT_COLUMN, "activationMode", "UILabel"]);
+    }
 
     /// The value of cell `name` in `row`, if it has one.
     fn cell<'a>(row: &'a TableRow, name: &str) -> Option<&'a str> {
