@@ -9,12 +9,12 @@ use regex::Regex;
 /// Background of the status bar's warning, like a warning notification's.
 const WARNING_BG: Color32 = Color32::from_rgb(0x9a, 0x58, 0x00);
 
-/// How much of the dialog's background shows while the user is elsewhere: enough to tell
-/// that values are under it, while they stay hard to read.
-const INACTIVE_FILL: f32 = 0.82;
+/// How much of the dialog's background shows while the user is elsewhere: little enough to see
+/// the values under it.
+const INACTIVE_FILL: f32 = 0.72;
 
 /// How much of the dialog's own text and controls shows while the user is elsewhere.
-const INACTIVE_CONTENT: f32 = 0.75;
+const INACTIVE_CONTENT: f32 = 0.65;
 
 /// What the user did in the dialog, for the owner to act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
