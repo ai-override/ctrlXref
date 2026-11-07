@@ -7,8 +7,9 @@ default-run = "ctrlxref"
 
 [dependencies]
 anyhow = "1.0.104"
-# OpenGL (glow) renderer only: no wgpu, so no DirectX.
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+# OpenGL (glow) renderer only: no wgpu, so no DirectX. Without "clipboard", copied text stays
+# inside the application and never reaches the system clipboard.
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard"] }
 egui_extras = { version = "0.37.0", default-features = false }
 egui_commonmark = { version = "0.26.0", default-features = false, features = ["pulldown_cmark"] }
 image = { version = "0.25", default-features = false, features = ["ico"] }

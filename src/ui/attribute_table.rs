@@ -109,6 +109,9 @@ struct Editing {
     focus: bool,
 }
 
+/// The item of a cell's context menu that does the same as Ctrl+C.
+const COPY_MENU_ITEM: &str = "Copy to clipboard";
+
 /// How far from the edge of the visible cells a selection drag starts scrolling, in rows.
 const DRAG_SCROLL_ZONE: f32 = 1.;
 
@@ -572,6 +575,22 @@ impl AttributeTable {
                                 if response.double_clicked() {
                                     self.start_edit(row_ix, col_ix);
                                 }
+                                // A right-click inside the selected cells keeps them, so the
+                                // menu copies them; elsewhere it selects the row, like a click.
+                                if response.secondary_clicked()
+                                    && !self.selection.is_some_and(|selection| selection.contains(row_ix, col_ix))
+                                {
+                                    out.clicked_row = Some(row_ix);
+                                    self.clear_selection();
+                                }
+                                response.context_menu(|ui| {
+                                    if ui.button(COPY_MENU_ITEM).clicked() {
+                                        if let Some(text) = self.selection_text(selected) {
+                                            ui.ctx().copy_text(text);
+                                        }
+                                        ui.close();
+                                    }
+                                });
                             }
                         });
                         if let Some(selection) = &mut self.selection {
@@ -631,6 +650,8 @@ impl AttributeTable {
             }
             None => RichText::new(text),
         };
+        // Other text colors are hard to read on the selection's.
+        let rich = if cell_selected { rich.color(ui.visuals().selection.stroke.color) } else { rich };
         ui.add(Label::new(rich).selectable(false).truncate());
     }
 }
@@ -991,6 +1012,65 @@ mod tests {
         // Nothing is selected: the clipboard is left alone.
         let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], None);
         assert_eq!(copied, None);
+    }
+
+    /// A right-click at `pos`: its press and release, then a frame for the menu to open.
+    fn right_click(headless: &mut Headless, table: &mut AttributeTable, pos: egui::Pos2, selected: Option<usize>) -> Option<usize> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut clicked = None;
+        for events in [vec![egui::Event::PointerMoved(pos)], vec![button(true)], vec![button(false)], Vec::new()] {
+            clicked = clicked.or(headless.frame(table, events, selected).0.clicked_row);
+        }
+        clicked
+    }
+
+    /// Clicks the first item of the menu opened at `pos`, returning the copied text.
+    fn click_menu_item(headless: &mut Headless, table: &mut AttributeTable, pos: egui::Pos2, selected: Option<usize>) -> Option<String> {
+        let item = pos + egui::vec2(24., 16.);
+        let mut copied = None;
+        for events in [
+            vec![egui::Event::PointerMoved(item)],
+            vec![Headless::press(item, true)],
+            vec![Headless::press(item, false)],
+            Vec::new(),
+        ] {
+            copied = copied.or(headless.frame(table, events, selected).1);
+        }
+        copied
+    }
+
+    #[test]
+    fn the_context_menu_copies_the_selected_cells() {
+        let mut table = table_of(&["a", "b", "c"], 6);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        let (from, to) = (headless.cell(1, 0), headless.cell(2, 1));
+        headless.drag(&mut table, from, to, 2);
+        headless.release(&mut table, to);
+
+        // Inside the selection: it stays, and the row selection doesn't move.
+        let pos = headless.cell(2, 0);
+        assert_eq!(right_click(&mut headless, &mut table, pos, None), None);
+        assert!(table.selection.is_some());
+        assert_eq!(click_menu_item(&mut headless, &mut table, pos, None).as_deref(), Some("a1\tb1\na2\tb2"));
+    }
+
+    #[test]
+    fn the_context_menu_elsewhere_selects_and_copies_that_row() {
+        let mut table = table_of(&["a", "b"], 6);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        let pos = headless.cell(0, 0);
+        let (from, to) = (headless.cell(4, 0), headless.cell(5, 0));
+        headless.drag(&mut table, from, to, 2);
+        headless.release(&mut table, to);
+        assert_eq!(right_click(&mut headless, &mut table, pos, None), Some(0));
+        assert_eq!(table.selection, None);
+        // The app selects the reported row before the menu item is clicked.
+        assert_eq!(click_menu_item(&mut headless, &mut table, pos, Some(0)).as_deref(), Some("a0\tb0"));
     }
 
     #[test]
