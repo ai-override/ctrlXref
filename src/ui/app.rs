@@ -148,6 +148,8 @@ enum DialogAction {
     Copy(String),
     ShowInExplorer(PathBuf),
     OpenRebindFile(PathBuf),
+    SaveAndExit,
+    ExitWithoutSaving,
 }
 
 /// A modal message box; with `confirm`, it has that button and a cancel button, and with
@@ -242,6 +244,8 @@ pub struct CtrlXrefApp {
     search: SearchDialog,
     /// Tree ids of what Mark All marked; the table has its rows' marks itself.
     marked: HashSet<String>,
+    /// Whether the open rebind file has changes that are not saved to it, which exiting asks about.
+    rebinds_modified: bool,
 }
 
 impl CtrlXrefApp {
@@ -279,6 +283,7 @@ impl CtrlXrefApp {
             dialogs: Vec::new(),
             search: SearchDialog::new(),
             marked: HashSet::new(),
+            rebinds_modified: false,
         }
     }
 
@@ -392,6 +397,7 @@ impl CtrlXrefApp {
             None => Rc::default(),
         };
         let tree = actionmap_tree(&root, &maps, &strings);
+        self.rebinds_modified = false;
         self.document = Some(Document {
             element_count: count_elements(&root),
             tree,
@@ -464,6 +470,7 @@ impl CtrlXrefApp {
         doc.rebinds = rebinds;
         doc.rebind_path = Some(path);
         doc.rebind_root = Some(root);
+        self.rebinds_modified = false;
         self.refresh_table();
         self.update_title();
 
@@ -712,7 +719,10 @@ impl CtrlXrefApp {
             return;
         };
         set_device_rebinds(rebind_root, &map, &action, device, &inputs);
-        doc.rebinds = read_rebinds(rebind_root);
+        // Retyping the same binding changes nothing.
+        let rebinds = read_rebinds(rebind_root);
+        self.rebinds_modified |= rebinds != doc.rebinds;
+        doc.rebinds = rebinds;
     }
 
     /// Asks for a profile, suggesting the game's extracted [`game_dir::DEFAULT_PROFILE`].
@@ -832,7 +842,44 @@ impl CtrlXrefApp {
             return;
         };
         match xml_doc::save(root, path) {
-            Ok(()) => self.dialogs.push(Dialog::saved(format!("Saved {}", path.display()), path)),
+            Ok(()) => {
+                self.rebinds_modified = false;
+                self.dialogs.push(Dialog::saved(format!("Saved {}", path.display()), path));
+            }
+            Err(err) => self.notify(Level::Error, format!("{err:#}")),
+        }
+    }
+
+    /// The window was asked to close, by File > Exit, Ctrl+Q or its X button. With rebinds that
+    /// are not saved, it stays open and asks what to do, in front of any other message box.
+    fn on_close_requested(&mut self) {
+        if !self.rebinds_modified {
+            return;
+        }
+        self.ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+        let asking = self.dialogs.iter().any(|dialog| {
+            matches!(dialog.confirm, Some((_, _, DialogAction::SaveAndExit)))
+        });
+        if !asking {
+            let path = self.document.as_ref().and_then(|doc| doc.rebind_path.as_deref());
+            let dialog = unsaved_rebinds_warning(path.unwrap_or(Path::new("")));
+            self.dialogs.insert(0, dialog);
+        }
+    }
+
+    /// Saves the rebind file and exits; if that fails, says so and stays open.
+    fn save_and_exit(&mut self) {
+        let Some(path) = self.rebind_path() else {
+            return;
+        };
+        let Some(root) = self.document.as_ref().and_then(|doc| doc.rebind_root.as_ref()) else {
+            return;
+        };
+        match xml_doc::save(root, &path) {
+            Ok(()) => {
+                self.rebinds_modified = false;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
         }
     }
@@ -1007,6 +1054,7 @@ impl CtrlXrefApp {
     }
 
     fn close_file(&mut self) {
+        self.rebinds_modified = false;
         self.document = None;
         self.selected = None;
         self.refresh_table();
@@ -1162,6 +1210,7 @@ impl CtrlXrefApp {
             set_keyboard_rebind(rebind_root, map, action, &format!("kb1_{combo}"));
         }
         doc.rebinds = read_rebinds(rebind_root);
+        self.rebinds_modified |= filled > 0;
         self.refresh_table();
 
         let mut note = format!(
@@ -1276,6 +1325,11 @@ impl CtrlXrefApp {
                 if self.has_profile() {
                     self.open_rebind_path(path);
                 }
+            }
+            DialogAction::SaveAndExit => self.save_and_exit(),
+            DialogAction::ExitWithoutSaving => {
+                self.rebinds_modified = false;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
             }
         }
     }
@@ -1546,6 +1600,9 @@ impl CtrlXrefApp {
 impl eframe::App for CtrlXrefApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if ctx.input(|input| input.viewport().close_requested()) {
+            self.on_close_requested();
+        }
         self.poll_extraction();
         if !self.started {
             self.started = true;
@@ -1608,6 +1665,23 @@ fn is_current_rebind(path: &Path) -> bool {
         .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase())
         .collect();
     tail == ["actionmaps.xml", "default", "profiles"]
+}
+
+/// Asks what to do with the changes to the rebind file at `path` before exiting. The game's own
+/// current rebind file gets the warning that saving it has.
+fn unsaved_rebinds_warning(path: &Path) -> Dialog {
+    let mut message = format!("The rebindings have been modified but not saved:\n{}", path.display());
+    if is_current_rebind(path) {
+        message.push_str(
+            "\n\nThis is your current actionmaps.xml. It will be overwritten by the game engine when you \
+             modify controls inside the game.",
+        );
+    }
+    message.push_str("\n\nSave them before exiting?");
+    let mut dialog = Dialog::warning("Unsaved rebindings", message);
+    dialog.confirm = Some(("Save", "Cancel", DialogAction::SaveAndExit));
+    dialog.extra = Some(("Exit Without Saving", DialogAction::ExitWithoutSaving));
+    dialog
 }
 
 /// Tells the user that the startup profile, relative to the game folder, needs one located.
@@ -2516,6 +2590,122 @@ mod tests {
         <actionmap name="m1"><action name="a"><gamepad input="x"/></action><action name="b"/></actionmap>
         <group><actionmap name="m2"><action name="c"/></actionmap></group>
     </profile>"#;
+
+    /// A running app, with no window, with a profile and a rebind file from a new temp folder
+    /// of its own, which it returns with the rebind file's path.
+    fn app_with_rebinds(test: &str) -> (super::CtrlXrefApp, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ctrlxref-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let profile = dir.join("profile.xml");
+        std::fs::write(&profile, r#"<p><actionmap name="m"><action name="a" keyboard="kb1_a"/><action name="b"/></actionmap></p>"#)
+            .unwrap();
+        let rebind = dir.join("rebinds.xml");
+        std::fs::write(&rebind, r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_x"/></action></actionmap></ActionMaps>"#)
+            .unwrap();
+        let mut app = super::CtrlXrefApp::new(None, None, None, &eframe::egui::Context::default());
+        app.startup_profile = None;
+        app.open_path(profile);
+        app.open_rebind_path(rebind.clone());
+        assert!(app.toasts.iter().all(|toast| toast.level == super::Level::Success), "{:?}", app.toasts.len());
+        (app, dir, rebind)
+    }
+
+    /// An edit of cell `column` of the action at source index `source_ix`.
+    fn edit(app: &mut super::CtrlXrefApp, source_ix: usize, column: &str, value: &str) {
+        app.apply_cell_edit(super::CellEdit { source_ix, column: column.into(), value: value.into() });
+    }
+
+    /// The close commands aside: whether a close request now asks about unsaved rebinds.
+    fn close_asks(app: &mut super::CtrlXrefApp) -> bool {
+        app.on_close_requested();
+        matches!(app.dialogs.first().and_then(|dialog| dialog.confirm.as_ref()), Some((_, _, super::DialogAction::SaveAndExit)))
+    }
+
+    #[test]
+    fn only_real_changes_to_the_rebinds_ask_before_exiting() {
+        let (mut app, dir, _) = app_with_rebinds("modified-flag");
+        assert!(!close_asks(&mut app));
+
+        // The same binding again, typed without its prefix.
+        edit(&mut app, 0, "keyboard", "x");
+        assert!(!app.rebinds_modified);
+
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        assert!(app.rebinds_modified);
+        assert!(close_asks(&mut app));
+
+        // Asking again doesn't stack the question.
+        assert!(close_asks(&mut app));
+        assert_eq!(app.dialogs.len(), 1);
+
+        // Reopening the rebind file drops the changes.
+        let path = app.document.as_ref().unwrap().rebind_path.clone().unwrap();
+        app.dialogs.clear();
+        app.open_rebind_path(path);
+        assert!(!app.rebinds_modified);
+        assert!(!close_asks(&mut app));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn autofill_counts_as_a_change_and_saving_clears_it() {
+        let (mut app, dir, rebind) = app_with_rebinds("autofill-flag");
+        app.autofill_keyboard();
+        assert!(app.rebinds_modified);
+
+        app.write_rebind_file(&rebind);
+        assert!(!app.rebinds_modified);
+        assert!(std::fs::read_to_string(&rebind).unwrap().contains(r#"name="b""#));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_failed_save_stays_modified() {
+        let (mut app, dir, _) = app_with_rebinds("failed-save-flag");
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        // A folder can't be written as a file.
+        app.write_rebind_file(&dir);
+        assert!(app.rebinds_modified);
+        app.document.as_mut().unwrap().rebind_path = Some(dir.clone());
+        app.save_and_exit();
+        assert!(app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_exit_question_saves_or_leaves_the_file() {
+        let (mut app, dir, rebind) = app_with_rebinds("exit-actions");
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        assert!(close_asks(&mut app));
+        let dialog = &app.dialogs[0];
+        assert_eq!(dialog.confirm.as_ref().map(|(ok, cancel, _)| (*ok, *cancel)), Some(("Save", "Cancel")));
+        assert_eq!(dialog.extra.as_ref().map(|(label, _)| *label), Some("Exit Without Saving"));
+
+        // Without saving: the file stays as it was, and the next close request goes through.
+        app.run_dialog_action(super::DialogAction::ExitWithoutSaving);
+        assert!(!app.rebinds_modified);
+        assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
+
+        // Saving: the file has the change, and no other message box gets in the way of exiting.
+        app.dialogs.clear();
+        edit(&mut app, 0, "keyboard", "kb1_z");
+        app.run_dialog_action(super::DialogAction::SaveAndExit);
+        assert!(!app.rebinds_modified);
+        assert!(std::fs::read_to_string(&rebind).unwrap().contains("kb1_z"));
+        assert!(app.dialogs.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_exit_question_warns_about_the_games_own_file() {
+        let own = super::unsaved_rebinds_warning(Path::new(r"C:\SC\LIVE\USER\Client\0\Profiles\default\actionmaps.xml"));
+        assert!(own.message.contains("overwritten by the game engine"));
+        let other = super::unsaved_rebinds_warning(Path::new(r"C:\SC\mappings\layout.xml"));
+        assert!(!other.message.contains("overwritten"));
+        assert!(other.message.contains("layout.xml"));
+    }
 
     /// The places a search for `pattern` goes through, as `(id, displayed row, occurrences)`.
     fn searched(profile: &str, strings: &Strings, pattern: &str) -> Vec<(String, Option<usize>, usize)> {

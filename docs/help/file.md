@@ -187,4 +187,8 @@ The sun / moon button at the right end of the title bar switches between light a
 
 ## Exit (Ctrl+Q)
 
-Closes ctrlXref. Changes that were not saved are lost.
+When the open rebind file has changes that are not saved, exiting first asks what to do, however
+you exit: **Save** saves them and exits, **Exit Without Saving** leaves the file as it was, and
+**Cancel** goes back to the application.
+
+Without such changes, it closes ctrlXref right away.
