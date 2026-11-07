@@ -9,6 +9,13 @@ use regex::Regex;
 /// Background of the status bar's warning, like a warning notification's.
 const WARNING_BG: Color32 = Color32::from_rgb(0x9a, 0x58, 0x00);
 
+/// How much of the dialog's background shows while the user is elsewhere: enough to tell
+/// that values are under it, while they stay hard to read.
+const INACTIVE_FILL: f32 = 0.82;
+
+/// How much of the dialog's own text and controls shows while the user is elsewhere.
+const INACTIVE_CONTENT: f32 = 0.75;
+
 /// What the user did in the dialog, for the owner to act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchAction {
@@ -37,6 +44,11 @@ pub struct SearchDialog {
     counts: (usize, usize),
     /// Where the last search stopped, until the text changes.
     found: Option<Found>,
+    /// Whether the user last worked in the dialog, as opposed to elsewhere in the window. F3 and
+    /// Shift+F3 leave it as it is. While it is not, the dialog is partly transparent.
+    active: bool,
+    /// Where the dialog was last drawn, to tell where clicks land.
+    rect: Option<egui::Rect>,
 }
 
 impl SearchDialog {
@@ -49,15 +61,19 @@ impl SearchDialog {
             focus: false,
             counts: (0, 0),
             found: None,
+            active: false,
+            rect: None,
         }
     }
 
-    /// Opens the dialog. The first time, it starts with the latest search, so Find Next works
-    /// right away. Returns whether the counts must be updated.
+    /// Opens the dialog, with the keyboard in its text field when `focus`. The first time, it
+    /// starts with the latest search, so Find Next works right away. Returns whether the counts
+    /// must be updated.
     pub fn open(&mut self, focus: bool) -> bool {
         let opening = !self.open;
         self.open = true;
         self.focus |= focus;
+        self.active = focus || (self.active && !opening);
         if self.history.is_none() {
             let history = search::load_history();
             if let Some(latest) = history.first() {
@@ -121,15 +137,26 @@ impl SearchDialog {
         if !self.open {
             return None;
         }
+        self.follow_clicks(ctx);
         let mut action = None;
         let mut open = true;
         let mut close = false;
-        egui::Window::new("Search")
+        let mut frame = egui::Frame::window(&ctx.global_style());
+        if !self.active {
+            frame.fill = frame.fill.gamma_multiply(INACTIVE_FILL);
+            // A shadow would darken what is under the dialog.
+            frame.shadow = egui::Shadow::NONE;
+        }
+        let shown = egui::Window::new("Search")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
+            .frame(frame)
             .default_pos(ctx.content_rect().right_top() + egui::vec2(-440., 70.))
             .show(ctx, |ui| {
+                if !self.active {
+                    ui.multiply_opacity(INACTIVE_CONTENT);
+                }
                 ui.horizontal(|ui| {
                     ui.label("Find:");
                     let mut output = TextEdit::singleline(&mut self.text)
@@ -138,6 +165,9 @@ impl SearchDialog {
                         .desired_width(300.)
                         .show(ui);
                     let id = output.response.response.id;
+                    if output.response.response.gained_focus() {
+                        self.active = true;
+                    }
                     if std::mem::take(&mut self.focus) {
                         output.response.response.request_focus();
                         let all = CCursorRange::two(CCursor::new(0), CCursor::new(self.text.chars().count()));
@@ -161,6 +191,8 @@ impl SearchDialog {
                     if let Some(picked) = self.history_button(ui) {
                         self.text = picked;
                         self.focus = true;
+                        // Its list is outside the dialog, but this is work in the dialog.
+                        self.active = true;
                         self.compile();
                         action = Some(SearchAction::Changed);
                     }
@@ -180,11 +212,21 @@ impl SearchDialog {
                     ui.colored_label(ui.visuals().warn_fg_color, error);
                 }
             });
+        self.rect = shown.map(|shown| shown.response.rect);
         if !open || close {
             self.open = false;
             self.found = None;
+            self.active = false;
         }
         action
+    }
+
+    /// A click in the dialog makes it active and a click elsewhere inactive.
+    fn follow_clicks(&mut self, ctx: &egui::Context) {
+        let pressed = ctx.input(|input| input.pointer.any_pressed().then(|| input.pointer.interact_pos()).flatten());
+        if let (Some(pos), Some(rect)) = (pressed, self.rect) {
+            self.active = rect.contains(pos);
+        }
     }
 
     /// The button that drops down the list of previous searches; returns the one picked.
@@ -297,6 +339,84 @@ mod tests {
         assert!(with("(", (0, 0), None).regex().is_none());
         assert!(!with("(", (0, 0), None).is_blank());
         assert!(with("a.b", (0, 0), None).regex().is_some());
+    }
+
+    /// Draws `dialog` for one frame with a click at `pressed`, if any.
+    fn frame(ctx: &egui::Context, dialog: &mut SearchDialog, pressed: Option<egui::Pos2>) {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200., 800.));
+        let mut events = Vec::new();
+        if let Some(pos) = pressed {
+            events.push(egui::Event::PointerMoved(pos));
+            events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| {
+            dialog.show(ui.ctx());
+        });
+        output.textures_delta.clear();
+        if let Some(pos) = pressed {
+            let release = egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let input = egui::RawInput { screen_rect: Some(screen), events: vec![release], ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                dialog.show(ui.ctx());
+            });
+            output.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn the_dialog_is_active_only_while_the_user_works_in_it() {
+        let ctx = egui::Context::default();
+        crate::ui::setup_fonts(&ctx);
+        let mut dialog = with("a", (1, 1), None);
+        let elsewhere = egui::pos2(100., 700.);
+
+        // Ctrl+F.
+        dialog.open(true);
+        assert!(dialog.active);
+        frame(&ctx, &mut dialog, None);
+        frame(&ctx, &mut dialog, None);
+        assert!(dialog.active);
+        let inside = dialog.rect.unwrap().center();
+
+        // A click elsewhere, and F3 and Shift+F3 keep it inactive.
+        frame(&ctx, &mut dialog, Some(elsewhere));
+        assert!(!dialog.active);
+        dialog.open(false);
+        frame(&ctx, &mut dialog, None);
+        assert!(!dialog.active);
+
+        // A click in it, and F3 keeps it active.
+        frame(&ctx, &mut dialog, Some(inside));
+        assert!(dialog.active);
+        dialog.open(false);
+        frame(&ctx, &mut dialog, None);
+        assert!(dialog.active);
+
+        // Ctrl+F brings it back from elsewhere.
+        frame(&ctx, &mut dialog, Some(elsewhere));
+        assert!(!dialog.active);
+        dialog.open(true);
+        assert!(dialog.active);
+    }
+
+    #[test]
+    fn f3_opens_a_closed_dialog_inactive() {
+        let mut dialog = with("a", (1, 1), None);
+        dialog.open(true);
+        dialog.open = false;
+        dialog.open(false);
+        assert!(!dialog.active);
     }
 
     #[test]

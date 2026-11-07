@@ -112,6 +112,9 @@ doesn't paste. Handlers for this usually split on tabs and line breaks, which fi
   regular expression.
 - The button next to the text field lists your previous searches, latest first. They are saved
   under `HKEY_CURRENT_USER\Software\ctrlXref` in the Windows registry.
+- The dialog turns partly transparent when you click elsewhere in the window, so you can tell
+  what is under it. **F3** and **Shift+F3** leave it that way. Clicking the dialog or pressing
+  **Ctrl+F** makes it solid again.
 - **Escape** in the text field or the dialog's **X** closes the dialog.
 
 ## Save Rebind File (Ctrl+S)
