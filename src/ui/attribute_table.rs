@@ -123,6 +123,9 @@ const COPY_MENU_ITEM: &str = "Copy to clipboard";
 /// The item of a cell's context menu that does the same as Ctrl+A.
 const SELECT_ALL_MENU_ITEM: &str = "Select All";
 
+/// The item of an editable cell's context menu that asks to clear the cell's whole column.
+const CLEAR_COLUMN_MENU_ITEM: &str = "Clear All Column Bindings";
+
 /// How far from the edge of the visible cells a selection drag starts scrolling, in rows.
 const DRAG_SCROLL_ZONE: f32 = 1.;
 
@@ -167,6 +170,8 @@ pub struct TableOutput {
     pub resorted: bool,
     /// Where each column's header cell is.
     pub header_rects: Vec<egui::Rect>,
+    /// The key of the column the user asked to clear with the context menu.
+    pub clear_column: Option<String>,
 }
 
 pub struct AttributeTable {
@@ -651,6 +656,17 @@ impl AttributeTable {
                                         self.select_all(ui.ctx());
                                         ui.close();
                                     }
+                                    let key = &self.columns[col_ix].key;
+                                    if self.editable.contains(key) {
+                                        ui.separator();
+                                        let has_values =
+                                            self.rows.iter().any(|row| !row.cells[col_ix].trim().is_empty());
+                                        let clear = egui::Button::new(CLEAR_COLUMN_MENU_ITEM);
+                                        if ui.add_enabled(has_values, clear).clicked() {
+                                            out.clear_column = Some(key.clone());
+                                            ui.close();
+                                        }
+                                    }
                                 });
                             }
                         });
@@ -1132,6 +1148,42 @@ mod tests {
         assert_eq!(right_click(&mut headless, &mut table, pos, None), None);
         assert!(table.selection.is_some());
         assert_eq!(click_menu_item(&mut headless, &mut table, pos, 0, None).as_deref(), Some("a1\tb1\na2\tb2"));
+    }
+
+    /// Right-clicks the cell at `row`, `col` and clicks the menu's clear item, past the separator.
+    /// Returns the column the table then asks to clear.
+    fn clear_from_menu(headless: &mut Headless, table: &mut AttributeTable, row: usize, col: usize) -> Option<String> {
+        let pos = headless.cell(row, col);
+        right_click(headless, table, pos, Some(row));
+        let item = pos + egui::vec2(24., 16. + 21. * 2. + 6.);
+        let mut asked = None;
+        for events in [
+            vec![egui::Event::PointerMoved(item)],
+            vec![Headless::press(item, true)],
+            vec![Headless::press(item, false)],
+            Vec::new(),
+        ] {
+            asked = asked.or(headless.frame(table, events, Some(row)).0.clear_column);
+        }
+        asked
+    }
+
+    #[test]
+    fn the_context_menu_clears_only_editable_columns_with_values() {
+        let mut table = table_of(&["name", "keyboard", "mouse"], 3);
+        table.set_editable(&["keyboard", "mouse"]);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        assert_eq!(clear_from_menu(&mut headless, &mut table, 1, 1).as_deref(), Some("keyboard"));
+        assert_eq!(clear_from_menu(&mut headless, &mut table, 2, 2).as_deref(), Some("mouse"));
+        assert_eq!(clear_from_menu(&mut headless, &mut table, 1, 0), None);
+
+        // A column with nothing to clear: its item is disabled.
+        let rows = attribute_rows(r#"<m><a name="1" keyboard=" "/><a name="2" keyboard=" "/></m>"#);
+        let mut table = AttributeTable::new();
+        table.set_rows(&["name", "keyboard"], &rows);
+        table.set_editable(&["keyboard"]);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        assert_eq!(clear_from_menu(&mut headless, &mut table, 0, 1), None);
     }
 
     #[test]

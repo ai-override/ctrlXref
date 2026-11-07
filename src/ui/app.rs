@@ -69,6 +69,9 @@ const CATEGORY_ATTRIBUTE: &str = "Category";
 /// Name of the localization file whose texts replace `@key` references in the table.
 const STRINGS_FILE: &str = "global.ini";
 
+/// How many changes to the rebinds Ctrl+Z can undo.
+const MAX_UNDO: usize = 100;
+
 /// The size of a help window's content when it opens.
 const HELP_SIZE: egui::Vec2 = egui::vec2(760., 720.);
 
@@ -155,6 +158,36 @@ enum DialogAction {
     SaveThen(AfterPrompt),
     /// Does what was asked without saving the open rebind file.
     DiscardThen(AfterPrompt),
+}
+
+/// The open rebind file's state before one change to it.
+struct UndoStep {
+    /// What the change was, for the notification.
+    label: String,
+    root: Element,
+    /// Whether that state had changes that are not saved.
+    modified: bool,
+}
+
+/// The changes to the open rebind file that Ctrl+Z can undo, latest last.
+#[derive(Default)]
+struct UndoStack(Vec<UndoStep>);
+
+impl UndoStack {
+    /// Remembers the state before a change, forgetting the oldest beyond [`MAX_UNDO`].
+    fn push(&mut self, label: String, root: Element, modified: bool) {
+        self.0.push(UndoStep { label, root, modified });
+        if self.0.len() > MAX_UNDO {
+            self.0.remove(0);
+        }
+    }
+
+    /// Notes that the file was saved, so going back to any earlier state differs from the file.
+    fn mark_saved(&mut self) {
+        for step in &mut self.0 {
+            step.modified = true;
+        }
+    }
 }
 
 /// What was asked when [`unsaved_rebinds_warning`] came up, to do once it is answered.
@@ -281,6 +314,8 @@ pub struct CtrlXrefApp {
     /// Whether the open rebind file has changes that are not saved to it, which exiting, closing
     /// the file and opening another one ask about.
     rebinds_modified: bool,
+    /// The changes to the open rebind file that Ctrl+Z can undo.
+    undo: UndoStack,
 }
 
 impl CtrlXrefApp {
@@ -319,6 +354,7 @@ impl CtrlXrefApp {
             search: SearchDialog::new(),
             marked: HashSet::new(),
             rebinds_modified: false,
+            undo: UndoStack::default(),
         }
     }
 
@@ -433,6 +469,7 @@ impl CtrlXrefApp {
         };
         let tree = actionmap_tree(&root, &maps, &strings);
         self.rebinds_modified = false;
+        self.undo = UndoStack::default();
         self.document = Some(Document {
             element_count: count_elements(&root),
             tree,
@@ -506,6 +543,7 @@ impl CtrlXrefApp {
         doc.rebind_path = Some(path);
         doc.rebind_root = Some(root);
         self.rebinds_modified = false;
+        self.undo = UndoStack::default();
         self.refresh_table();
         self.update_title();
 
@@ -753,11 +791,65 @@ impl CtrlXrefApp {
         let Some((map, action)) = doc.rows.get(edit.source_ix).and_then(|path| action_key(&doc.root, path)) else {
             return;
         };
+        let before = rebind_root.clone();
         set_device_rebinds(rebind_root, &map, &action, device, &inputs);
         // Retyping the same binding changes nothing.
         let rebinds = read_rebinds(rebind_root);
-        self.rebinds_modified |= rebinds != doc.rebinds;
+        if rebinds != doc.rebinds {
+            self.undo.push(format!("{device} binding of {action}"), before, self.rebinds_modified);
+            self.rebinds_modified = true;
+        }
         doc.rebinds = rebinds;
+    }
+
+    /// Removes all rebinds of `device` from the actions in the table, as the context menu asks.
+    /// The game then uses those actions' default bindings again. Ctrl+Z brings the rebinds back.
+    fn clear_column(&mut self, device: &str) {
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(rebind_root) = &mut doc.rebind_root else {
+            return;
+        };
+        let actions: Vec<(String, String)> = doc.rows.iter().filter_map(|path| action_key(&doc.root, path)).collect();
+        let before = rebind_root.clone();
+        let cleared = clear_device_rebinds(rebind_root, &doc.rebinds, &actions, device);
+        if cleared == 0 {
+            return;
+        }
+        doc.rebinds = read_rebinds(rebind_root);
+        self.undo.push(format!("clearing the {device} column"), before, self.rebinds_modified);
+        self.rebinds_modified = true;
+        self.refresh_table();
+        self.notify(
+            Level::Success,
+            format!(
+                "Cleared {cleared} {device} bindings; those actions now use their defaults. \
+                 Ctrl+Z brings them back. Save the rebind file to keep this"
+            ),
+        );
+    }
+
+    /// Ctrl+Z undoes the latest change to the rebinds, unless a text field has the keyboard, which
+    /// then undoes its own typing.
+    fn undo_key(&mut self, ctx: &Context) {
+        let undo = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, Key::Z);
+        if !ctx.egui_wants_keyboard_input() && ctx.input_mut(|input| input.consume_shortcut(&undo)) {
+            self.undo_change();
+        }
+    }
+
+    /// Puts the open rebind file back as it was before its latest change.
+    fn undo_change(&mut self) {
+        let (Some(doc), Some(step)) = (&mut self.document, self.undo.0.pop()) else {
+            self.notify(Level::Info, "Nothing to undo");
+            return;
+        };
+        doc.rebinds = read_rebinds(&step.root);
+        doc.rebind_root = Some(step.root);
+        self.rebinds_modified = step.modified;
+        self.refresh_table();
+        self.notify(Level::Info, format!("Undid {}", step.label));
     }
 
     /// Asks for a profile, suggesting the game's extracted [`game_dir::DEFAULT_PROFILE`].
@@ -876,6 +968,7 @@ impl CtrlXrefApp {
         match xml_doc::save(root, path) {
             Ok(()) => {
                 self.rebinds_modified = false;
+                self.undo.mark_saved();
                 self.dialogs.push(Dialog::saved(format!("Saved {}", path.display()), path));
             }
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
@@ -945,6 +1038,7 @@ impl CtrlXrefApp {
         match xml_doc::save(root, &path) {
             Ok(()) => {
                 self.rebinds_modified = false;
+                self.undo.mark_saved();
                 self.proceed(after);
             }
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
@@ -1117,6 +1211,7 @@ impl CtrlXrefApp {
 
     fn close_file(&mut self) {
         self.rebinds_modified = false;
+        self.undo = UndoStack::default();
         self.document = None;
         self.selected = None;
         self.refresh_table();
@@ -1268,6 +1363,9 @@ impl CtrlXrefApp {
             return;
         };
         let filled = unbound.len().min(unused.len());
+        if filled > 0 {
+            self.undo.push("autofilling the keyboard bindings".into(), rebind_root.clone(), self.rebinds_modified);
+        }
         for ((map, action), combo) in unbound.iter().zip(&unused) {
             set_keyboard_rebind(rebind_root, map, action, &format!("kb1_{combo}"));
         }
@@ -1483,11 +1581,15 @@ impl CtrlXrefApp {
         // An open dialog is modal, and has its own text to copy.
         if self.dialogs.is_empty() {
             self.table.shortcuts(ui.ctx(), selected);
+            self.undo_key(&ui.ctx().clone());
         }
         let scroll_to = self.scroll_table_to.take();
         let out = self.table.show(ui, selected, scroll_to);
         if self.table.take_marks_cleared() {
             self.clear_tree_marks();
+        }
+        if let Some(column) = &out.clear_column {
+            self.clear_column(column);
         }
         if let Some(row_ix) = out.clicked_row {
             self.select_in_table(row_ix);
@@ -2179,6 +2281,22 @@ fn set_device_rebinds(root: &mut Element, map: &str, action: &str, device: &str,
     }
 }
 
+/// Removes all `device` rebinds of `actions` (`(actionmap name, action name)`) from a rebind file
+/// whose inputs are `rebinds`. Returns how many there were. Rebinds of actions not listed stay.
+fn clear_device_rebinds(root: &mut Element, rebinds: &Rebinds, actions: &[(String, String)], device: &str) -> usize {
+    let mut cleared = 0;
+    for key in actions {
+        let of_device = rebinds
+            .get(key)
+            .map_or(0, |inputs| inputs.iter().filter(|input| rebind_device(input) == Some(device)).count());
+        if of_device > 0 {
+            set_device_rebinds(root, &key.0, &key.1, device, &[]);
+            cleared += of_device;
+        }
+    }
+    cleared
+}
+
 /// Binds `input` (a `kb...` keyboard input) to `action` of actionmap `map` in a rebind
 /// file: fills its empty keyboard rebind, or adds a `<rebind>`, creating the action and
 /// the actionmap when the file has none yet.
@@ -2741,6 +2859,127 @@ mod tests {
         let after = asked(app).expect("the question is up");
         app.dialogs.remove(0);
         app.run_dialog_action(if save { DialogAction::SaveThen(after) } else { DialogAction::DiscardThen(after) });
+    }
+
+    /// The open rebinds, as sorted `action: input` texts.
+    fn rebinds_of(app: &super::CtrlXrefApp) -> Vec<String> {
+        let doc = app.document.as_ref().unwrap();
+        let mut all: Vec<String> = doc
+            .rebinds
+            .iter()
+            .flat_map(|((_, action), inputs)| inputs.iter().map(move |input| format!("{action}: {input}")))
+            .collect();
+        all.sort();
+        all
+    }
+
+    #[test]
+    fn clearing_a_column_removes_only_that_device_and_undo_brings_it_back() {
+        let (mut app, dir, _) = app_with_rebinds("clear-column");
+        edit(&mut app, 1, "keyboard", "kb1_b | kb1_c");
+        edit(&mut app, 0, "mouse", "mo1_m");
+        let before = rebinds_of(&app);
+        assert_eq!(before, ["a: kb1_x", "a: mo1_m", "b: kb1_b", "b: kb1_c"]);
+        let root_before = app.document.as_ref().unwrap().rebind_root.clone();
+
+        app.clear_column("keyboard");
+        assert_eq!(rebinds_of(&app), ["a: mo1_m"]);
+        assert!(app.rebinds_modified);
+
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), before);
+        // The whole file is back as it was, order and all.
+        assert_eq!(app.document.as_ref().unwrap().rebind_root, root_before);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn clearing_an_empty_column_is_no_change() {
+        let (mut app, dir, _) = app_with_rebinds("clear-empty");
+        app.clear_column("gamepad");
+        assert!(!app.rebinds_modified);
+        assert!(app.undo.0.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn clearing_leaves_rebinds_of_actions_not_in_the_profile() {
+        let (mut app, dir, rebind) = app_with_rebinds("clear-unmatched");
+        std::fs::write(
+            &rebind,
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_x"/></action><action name="gone"><rebind input="kb1_g"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        app.open_rebind_path(rebind);
+        app.clear_column("keyboard");
+        assert_eq!(rebinds_of(&app), ["gone: kb1_g"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn undo_steps_back_through_every_kind_of_change() {
+        let (mut app, dir, _) = app_with_rebinds("undo-steps");
+        let start = rebinds_of(&app);
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        let edited = rebinds_of(&app);
+        app.autofill_keyboard();
+        let filled = rebinds_of(&app);
+        assert_ne!(filled, edited);
+        app.clear_column("keyboard");
+        assert_eq!(app.undo.0.len(), 3);
+
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), filled);
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), edited);
+        assert!(app.rebinds_modified);
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), start);
+        // Back where the file was opened: nothing to save.
+        assert!(!app.rebinds_modified);
+
+        // Nothing left, and that changes nothing.
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), start);
+        assert!(!app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn undoing_past_a_save_counts_as_a_change_to_save() {
+        let (mut app, dir, rebind) = app_with_rebinds("undo-save");
+        app.clear_column("keyboard");
+        app.write_rebind_file(&rebind);
+        assert!(!app.rebinds_modified);
+        assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_x"));
+
+        // The file no longer has it, so bringing it back is something to save.
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), ["a: kb1_x"]);
+        assert!(app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn opening_or_closing_a_file_forgets_the_undo_steps() {
+        let (mut app, dir, rebind) = app_with_rebinds("undo-forget");
+        app.clear_column("keyboard");
+        app.open_rebind_path(rebind);
+        assert!(app.undo.0.is_empty());
+        app.clear_column("keyboard");
+        app.close_file();
+        assert!(app.undo.0.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn undo_keeps_only_the_latest_steps() {
+        let mut undo = super::UndoStack::default();
+        for ix in 0..super::MAX_UNDO + 5 {
+            undo.push(ix.to_string(), xmltree::Element::new("a"), false);
+        }
+        assert_eq!(undo.0.len(), super::MAX_UNDO);
+        assert_eq!(undo.0[0].label, "5");
     }
 
     #[test]

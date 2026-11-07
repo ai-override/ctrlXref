@@ -58,6 +58,12 @@ profile and can't be edited.
   `kb1_up`. A binding with another device's prefix, like `js1_button2` in the keyboard
   column, is refused.
 - Edits only ever change the rebind file. `defaultProfile.xml` is never written.
+- Right-click a **keyboard**, **mouse**, **joystick** or **gamepad** cell and choose **Clear All
+  Column Bindings** to remove all of that device's rebinds from the actions in the table. This
+  does not unbind those actions: the game uses their default bindings again.
+- **Ctrl+Z** undoes the latest change to the rebinds, one step at a time, up to 100: cell edits,
+  **Clear All Column Bindings** and **Autofill All Unbound Keyboard Controls**. In a text field it
+  undoes your typing instead, so click the table first. Opening or closing a file forgets the steps.
 - The **DEFAULT from: Data.p4k R/O** column, in light blue, shows the default bindings that come from the
   game engine through `defaultProfile.xml`, for all devices. It is read-only:
   double-clicking it does nothing. The device columns show only the rebind file's
