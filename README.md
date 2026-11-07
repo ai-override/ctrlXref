@@ -23,6 +23,7 @@ A Windows desktop tool for viewing and editing [Star Citizen](https://robertsspa
 - See default bindings side by side with your rebinds for keyboard, mouse, joysticks and gamepad.
 - Edit bindings directly in the table, with possible conflicts shown in red.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
+- Search the table and the tree with regular expressions (`Ctrl+F`, `F3`, `Shift+F3`), keeping previous searches in a dropdown list.
 - Open the game's current `actionmaps.xml` or any mappings file you exported from the game.
 - Create a blank rebind file that "clears" every binding, for starting from scratch. ***Behavior inside the game UNTESTED***.
 - List unused key combinations and allows "sequential" assignment of them to actions with no keyboard binding.

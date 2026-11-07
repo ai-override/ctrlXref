@@ -95,6 +95,25 @@ value that starts with `=`, `+`, `-` or `@` as a formula.
 A Java `JTable` can only paste if its application adds that: `JTable` copies by itself but
 doesn't paste. Handlers for this usually split on tabs and line breaks, which fits this text.
 
+## Searching the table and the tree (Ctrl+F)
+
+**Ctrl+F** opens the **Search** dialog, which stays open while you use the table.
+
+- **F3** or **Find Next**, or **Enter** in the text field, goes to the next match. **Shift+F3**
+  or **Find Previous**, or **Shift+Enter**, goes to the previous one. **F3** and **Shift+F3**
+  also open the dialog when it is closed.
+- The text is a regular expression, such as `kb1_(lalt|ralt)\+` or `^v_eject`. Case is ignored;
+  put `(?-i)` first to respect it.
+- A search looks through all columns of the table, in the order shown, and then the names of
+  the actionmaps in the tree, including tree titles that no column shows. Past the end it
+  starts over from the beginning, and past the beginning from the end.
+- The status bar shows the number of occurrences, how many places have them, and which of them
+  you are at. A highlighted warning tells when nothing matches or the text is not a valid
+  regular expression.
+- The button next to the text field lists your previous searches, latest first. They are saved
+  under `HKEY_CURRENT_USER\Software\ctrlXref` in the Windows registry.
+- **Escape** in the text field or the dialog's **X** closes the dialog.
+
 ## Save Rebind File (Ctrl+S)
 
 Writes the open rebind file back to where it was opened from, including the bindings that

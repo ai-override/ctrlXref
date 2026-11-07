@@ -4,6 +4,7 @@ mod app;
 mod attribute_table;
 mod help;
 mod menus;
+mod search;
 mod theme;
 
 use std::path::PathBuf;

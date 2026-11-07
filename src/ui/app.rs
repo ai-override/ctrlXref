@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ctrlxref::localization::Strings;
+use ctrlxref::search::{self, Place};
 use ctrlxref::xml_doc;
 use ctrlxref::{extract, game_dir, keys};
 use eframe::egui::{
@@ -23,6 +24,7 @@ use xmltree::{Element, XMLNode};
 use super::attribute_table::{self, AttributeTable, CellEdit, CellStyle, TableRow};
 use super::help::{self, HelpTopic};
 use super::menus::{self, Command, ThemeChoice};
+use super::search::{SearchAction, SearchDialog};
 use super::theme;
 
 /// Tree id of the document root; descendants append `/<element index>` per level.
@@ -237,6 +239,7 @@ pub struct CtrlXrefApp {
     toasts: Vec<Toast>,
     /// Message boxes, shown one at a time, oldest first.
     dialogs: Vec<Dialog>,
+    search: SearchDialog,
 }
 
 impl CtrlXrefApp {
@@ -272,6 +275,7 @@ impl CtrlXrefApp {
             icon,
             toasts: Vec::new(),
             dialogs: Vec::new(),
+            search: SearchDialog::new(),
         }
     }
 
@@ -312,6 +316,9 @@ impl CtrlXrefApp {
             Command::AutofillKeyboard => self.autofill_keyboard(),
             Command::ExportCsv => self.export_csv(frame),
             Command::ExportJson => self.export_json(frame),
+            Command::Find => self.open_search(),
+            Command::FindNext => self.find_with_key(true),
+            Command::FindPrevious => self.find_with_key(false),
             Command::Help(topic) => self.show_help(topic),
             Command::About => self.about(),
         }
@@ -482,6 +489,80 @@ impl CtrlXrefApp {
             doc.empty_keyboard_rows = count_empty_keyboard(&doc.root, &doc.rows, &doc.rebinds);
         }
         self.table.set_rows(&COLUMNS, &rows);
+        self.update_search_counts();
+    }
+
+    /// Everything the search can stop at, in its order, with the matches of its regular
+    /// expression; nothing without one.
+    fn search_places(&self) -> Vec<Place> {
+        match (&self.document, self.search.regex()) {
+            (Some(doc), Some(regex)) => search_places(&doc.tree, &doc.rows, self.table.displayed_rows(), regex),
+            _ => Vec::new(),
+        }
+    }
+
+    fn update_search_counts(&mut self) {
+        let places = self.search_places();
+        self.search.set_counts(&places);
+    }
+
+    /// Opens the Search dialog with the keyboard in its text field. Not over a message box.
+    fn open_search(&mut self) {
+        if self.dialogs.is_empty() && self.search.open(true) {
+            self.update_search_counts();
+        }
+    }
+
+    /// F3 and Shift+F3 open the Search dialog when it is closed, and search.
+    fn find_with_key(&mut self, forward: bool) {
+        if !self.dialogs.is_empty() {
+            return;
+        }
+        if self.search.open(false) {
+            self.update_search_counts();
+        }
+        if self.search.is_blank() {
+            self.search.open(true);
+        } else {
+            self.find(forward);
+        }
+    }
+
+    /// Moves to the next or the previous match, going around the ends of the table and the
+    /// tree, and adds the search to the previous ones. The status bar tells how it went.
+    fn find(&mut self, forward: bool) {
+        if self.search.regex().is_none() {
+            return;
+        }
+        if let Err(err) = self.search.remember() {
+            self.notify(Level::Error, format!("{err:#}"));
+        }
+        let places = self.search_places();
+        self.search.set_counts(&places);
+        let found = search::find(&places, self.selected.as_deref(), forward);
+        self.search.set_found(found);
+        let Some(place) = found.map(|found| &places[found.place]) else {
+            return;
+        };
+        match place.row {
+            Some(row) => {
+                self.table.clear_selection();
+                self.selected = Some(place.id.clone());
+                self.scroll_table_to = Some(row);
+            }
+            None => self.select_in_tree(place.id.clone()),
+        }
+        self.reveal_in_tree = true;
+    }
+
+    /// Draws the Search dialog and does what was asked in it.
+    fn search_dialog(&mut self, ctx: &Context) {
+        match self.search.show(ctx) {
+            Some(SearchAction::Changed) => self.update_search_counts(),
+            Some(SearchAction::FindNext) => self.find(true),
+            Some(SearchAction::FindPrevious) => self.find(false),
+            None => {}
+        }
     }
 
     /// Source index (into `Document::rows`) of the action with tree id `id`.
@@ -1252,6 +1333,13 @@ impl CtrlXrefApp {
     }
 
     fn status_bar(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            self.search.status(ui);
+            self.status_text(ui);
+        });
+    }
+
+    fn status_text(&self, ui: &mut egui::Ui) {
         let text = match &self.document {
             Some(doc) => {
                 let mut text = format!(
@@ -1272,7 +1360,7 @@ impl CtrlXrefApp {
             }
             None => "No file open".to_string(),
         };
-        ui.label(RichText::new(text).small().weak());
+        ui.add(egui::Label::new(RichText::new(text).small().weak()).truncate());
     }
 
     /// Shows the oldest dialog, running its action when confirmed.
@@ -1429,6 +1517,7 @@ impl eframe::App for CtrlXrefApp {
             .show(ui, |ui| self.tree_panel(ui));
         egui::CentralPanel::default_margins().show(ui, |ui| self.attribute_panel(ui));
 
+        self.search_dialog(&ctx);
         self.dialog(&ctx);
         self.toasts(&ctx);
         self.help_windows(&ctx);
@@ -1628,6 +1717,36 @@ fn insert_non_blank(object: &mut serde_json::Map<String, serde_json::Value>, key
     if !value.trim().is_empty() {
         object.insert(key.into(), value.into());
     }
+}
+
+/// What a search goes through, in its order: the table's rows as displayed, then the tree's
+/// actionmaps, which have no row. A row's matches are those in its cells and in a tree label
+/// the game has no text for, which no cell shows. An actionmap's are those in its technical name
+/// and its label, which counts only when it does not hold the name. `cells` are the displayed
+/// rows, whose source indices point into `rows`.
+fn search_places<'a>(
+    tree: &[TreeNode],
+    rows: &[Vec<usize>],
+    cells: impl Iterator<Item = (usize, &'a [String])>,
+    regex: &regex::Regex,
+) -> Vec<Place> {
+    let made_up_labels: HashMap<&str, &str> = tree
+        .iter()
+        .flat_map(|map| &map.children)
+        .filter(|action| action.fallback)
+        .map(|action| (action.id.as_str(), action.label.as_str()))
+        .collect();
+    let actions = cells.enumerate().filter_map(|(row, (source_ix, cells))| {
+        let id = tree_id(rows.get(source_ix)?);
+        let in_cells: usize = cells.iter().map(|cell| search::occurrences(regex, cell)).sum();
+        let in_label = made_up_labels.get(id.as_str()).map_or(0, |label| search::occurrences(regex, label));
+        Some(Place { id, row: Some(row), occurrences: in_cells + in_label })
+    });
+    let maps = tree.iter().map(|map| {
+        let in_label = if map.label.contains(&map.name) { 0 } else { search::occurrences(regex, &map.label) };
+        Place { id: map.id.clone(), row: None, occurrences: search::occurrences(regex, &map.name) + in_label }
+    });
+    actions.chain(maps).collect()
 }
 
 /// The table row for each action: its attributes in `COLUMNS` with `@key` references resolved
@@ -2347,6 +2466,66 @@ mod tests {
         <actionmap name="m1"><action name="a"><gamepad input="x"/></action><action name="b"/></actionmap>
         <group><actionmap name="m2"><action name="c"/></actionmap></group>
     </profile>"#;
+
+    /// The places a search for `pattern` goes through, as `(id, displayed row, occurrences)`.
+    fn searched(profile: &str, strings: &Strings, pattern: &str) -> Vec<(String, Option<usize>, usize)> {
+        let profile = xml_doc::from_str(profile).unwrap();
+        let maps = find_actionmaps(&profile);
+        let rows = action_paths(&profile, &maps);
+        let tree = actionmap_tree(&profile, &maps, strings);
+        let mut table = super::AttributeTable::new();
+        table.set_rows(&super::COLUMNS, &table_rows(&profile, &rows, &Rebinds::new(), strings));
+        let regex = ctrlxref::search::compile(pattern).unwrap();
+        super::search_places(&tree, &rows, table.displayed_rows(), &regex)
+            .into_iter()
+            .map(|place| (place.id, place.row, place.occurrences))
+            .collect()
+    }
+
+    const SEARCHED: &str = r#"<p>
+        <actionmap name="seats" UILabel="@ui_seats">
+            <action name="v_eject" UILabel="@ui_eject" keyboard="kb1_e"/>
+            <action name="v_hud_cycle" keyboard="kb1_h"/>
+        </actionmap>
+        <actionmap name="player"><action name="jump" UILabel="@ui_jump" UIDescription="Jump, then jump"/></actionmap>
+    </p>"#;
+
+    fn searched_counts(pattern: &str) -> Vec<usize> {
+        let strings = Strings::parse("ui_seats=Pilot Seats\nui_eject=Eject\nui_jump=Jump\n");
+        searched(SEARCHED, &strings, pattern).into_iter().map(|(_, _, count)| count).collect()
+    }
+
+    #[test]
+    fn a_search_goes_through_the_rows_and_then_the_actionmaps() {
+        let strings = Strings::default();
+        let ids: Vec<(String, Option<usize>)> =
+            searched(SEARCHED, &strings, "x").into_iter().map(|(id, row, _)| (id, row)).collect();
+        let expected = [
+            ("r/0/0", Some(0)),
+            ("r/0/1", Some(1)),
+            ("r/1/0", Some(2)),
+            ("r/0", None),
+            ("r/1", None),
+        ];
+        assert_eq!(ids, expected.map(|(id, row)| (id.to_string(), row)));
+    }
+
+    #[test]
+    fn a_search_counts_the_table_and_what_only_the_tree_shows() {
+        // Rows, then actionmaps: the cells, a whole description's worth.
+        assert_eq!(searched_counts("jump"), [0, 0, 4, 0, 0]);
+        // Case is ignored, and a regular expression spans the cell's text.
+        assert_eq!(searched_counts("^V_.*E"), [1, 1, 0, 0, 0]);
+        // The bindings count.
+        assert_eq!(searched_counts("kb1_"), [1, 1, 0, 0, 0]);
+        // An actionmap's label and its technical name.
+        assert_eq!(searched_counts("pilot"), [0, 0, 0, 1, 0]);
+        assert_eq!(searched_counts("seats"), [0, 0, 0, 2, 0]);
+        // A tree label made from the technical name, which no cell shows.
+        assert_eq!(searched_counts("Hud Cycle"), [0, 1, 0, 0, 0]);
+        // Nothing to find.
+        assert_eq!(searched_counts("nowhere"), [0, 0, 0, 0, 0]);
+    }
 
     /// `profile` as the JSON export, through a table like the app's, with `rebinds` applied.
     fn exported(profile: &str, rebinds: &str, strings: &Strings) -> serde_json::Value {

@@ -13,6 +13,7 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "de
 egui_extras = { version = "0.37.0", default-features = false }
 egui_commonmark = { version = "0.26.0", default-features = false, features = ["pulldown_cmark"] }
 image = { version = "0.25", default-features = false, features = ["ico"] }
+regex = "1"
 rfd = "0.17.2"
 # preserve_order: exported keys stay in the table's column order.
 serde_json = { version = "1", features = ["preserve_order"] }

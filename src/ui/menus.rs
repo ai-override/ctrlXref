@@ -23,6 +23,9 @@ pub enum Command {
     AutofillKeyboard,
     ExportCsv,
     ExportJson,
+    Find,
+    FindNext,
+    FindPrevious,
     Help(HelpTopic),
     About,
 }
@@ -39,9 +42,12 @@ const CTRL_SHIFT: Modifiers = Modifiers::CTRL.plus(Modifiers::SHIFT);
 
 /// Key bindings. The Shift variants come first: a shortcut without Shift also matches
 /// with Shift held.
-const SHORTCUTS: [(Modifiers, Key, Command); 7] = [
+const SHORTCUTS: [(Modifiers, Key, Command); 10] = [
     (CTRL_SHIFT, Key::O, Command::OpenCustomRebindFile),
     (CTRL_SHIFT, Key::S, Command::SaveRebindCopyAs),
+    (Modifiers::SHIFT, Key::F3, Command::FindPrevious),
+    (Modifiers::NONE, Key::F3, Command::FindNext),
+    (Modifiers::CTRL, Key::F, Command::Find),
     (Modifiers::CTRL, Key::O, Command::OpenFile),
     (Modifiers::CTRL, Key::R, Command::OpenCurrentRebindFile),
     (Modifiers::CTRL, Key::S, Command::SaveRebindFile),
