@@ -81,8 +81,9 @@ Copied cells paste into Excel and other tables as separate cells.
 - **Ctrl+A** selects the whole table.
 - **Ctrl+C** copies the selected cells in the order shown. With no cells selected, it copies
   the selected row.
-- **Right-click** a cell and choose **Copy to clipboard** to do the same as **Ctrl+C**.
-  Right-clicking outside the selected cells selects that cell's row first.
+- **Right-click** a cell and choose **Copy to clipboard** to do the same as **Ctrl+C**, or
+  **Select All** to do the same as **Ctrl+A**. Right-clicking outside the selected cells
+  selects that cell's row first.
 - Only **Ctrl+A** copies the column headers too.
 - Clicking a cell, using the tree or the arrow keys, sorting, or changing the table clears the
   selection.

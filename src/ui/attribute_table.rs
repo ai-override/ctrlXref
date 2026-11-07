@@ -112,6 +112,9 @@ struct Editing {
 /// The item of a cell's context menu that does the same as Ctrl+C.
 const COPY_MENU_ITEM: &str = "Copy to clipboard";
 
+/// The item of a cell's context menu that does the same as Ctrl+A.
+const SELECT_ALL_MENU_ITEM: &str = "Select All";
+
 /// How far from the edge of the visible cells a selection drag starts scrolling, in rows.
 const DRAG_SCROLL_ZONE: f32 = 1.;
 
@@ -208,14 +211,8 @@ impl AttributeTable {
             return;
         }
         let select_all = KeyboardShortcut::new(Modifiers::CTRL, Key::A);
-        if ctx.input_mut(|input| input.consume_shortcut(&select_all)) && !self.rows.is_empty() {
-            self.selection = Some(CellSelection {
-                anchor: (0, 0),
-                focus: (self.rows.len() - 1, self.columns.len() - 1),
-                all: true,
-            });
-            self.dragging = false;
-            clear_label_selection(ctx);
+        if ctx.input_mut(|input| input.consume_shortcut(&select_all)) {
+            self.select_all(ctx);
         }
         let copy = ctx.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Copy)));
         let label_selected = ctx.with_plugin(|labels: &mut LabelSelectionState| labels.has_selection());
@@ -225,6 +222,20 @@ impl AttributeTable {
         {
             ctx.copy_text(text);
         }
+    }
+
+    /// Selects all cells, as Ctrl+A and the context menu do.
+    fn select_all(&mut self, ctx: &egui::Context) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selection = Some(CellSelection {
+            anchor: (0, 0),
+            focus: (self.rows.len() - 1, self.columns.len() - 1),
+            all: true,
+        });
+        self.dragging = false;
+        clear_label_selection(ctx);
     }
 
     /// The selected cells, or else displayed row `selected`, as tab-separated text in the
@@ -588,6 +599,10 @@ impl AttributeTable {
                                         if let Some(text) = self.selection_text(selected) {
                                             ui.ctx().copy_text(text);
                                         }
+                                        ui.close();
+                                    }
+                                    if ui.button(SELECT_ALL_MENU_ITEM).clicked() {
+                                        self.select_all(ui.ctx());
                                         ui.close();
                                     }
                                 });
@@ -1029,9 +1044,15 @@ mod tests {
         clicked
     }
 
-    /// Clicks the first item of the menu opened at `pos`, returning the copied text.
-    fn click_menu_item(headless: &mut Headless, table: &mut AttributeTable, pos: egui::Pos2, selected: Option<usize>) -> Option<String> {
-        let item = pos + egui::vec2(24., 16.);
+    /// Clicks an item, counted from 0, of the menu opened at `pos`, returning the copied text.
+    fn click_menu_item(
+        headless: &mut Headless,
+        table: &mut AttributeTable,
+        pos: egui::Pos2,
+        item: usize,
+        selected: Option<usize>,
+    ) -> Option<String> {
+        let item = pos + egui::vec2(24., 16. + 21. * item as f32);
         let mut copied = None;
         for events in [
             vec![egui::Event::PointerMoved(item)],
@@ -1056,7 +1077,25 @@ mod tests {
         let pos = headless.cell(2, 0);
         assert_eq!(right_click(&mut headless, &mut table, pos, None), None);
         assert!(table.selection.is_some());
-        assert_eq!(click_menu_item(&mut headless, &mut table, pos, None).as_deref(), Some("a1\tb1\na2\tb2"));
+        assert_eq!(click_menu_item(&mut headless, &mut table, pos, 0, None).as_deref(), Some("a1\tb1\na2\tb2"));
+    }
+
+    #[test]
+    fn the_context_menu_selects_all_like_ctrl_a() {
+        let mut table = table_of(&["a", "b"], 3);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        let pos = headless.cell(1, 0);
+
+        right_click(&mut headless, &mut table, pos, None);
+        click_menu_item(&mut headless, &mut table, pos, 1, Some(1));
+        let from_menu = table.selection;
+        assert_eq!(from_menu.map(|selection| (selection.rows(), selection.columns(), selection.all)), Some((0..=2, 0..=1, true)));
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], Some(1));
+        assert_eq!(copied.as_deref(), Some("a\tb\na0\tb0\na1\tb1\na2\tb2"));
+
+        table.clear_selection();
+        headless.ctrl_a(&mut table);
+        assert_eq!(table.selection, from_menu);
     }
 
     #[test]
@@ -1070,7 +1109,7 @@ mod tests {
         assert_eq!(right_click(&mut headless, &mut table, pos, None), Some(0));
         assert_eq!(table.selection, None);
         // The app selects the reported row before the menu item is clicked.
-        assert_eq!(click_menu_item(&mut headless, &mut table, pos, Some(0)).as_deref(), Some("a0\tb0"));
+        assert_eq!(click_menu_item(&mut headless, &mut table, pos, 0, Some(0)).as_deref(), Some("a0\tb0"));
     }
 
     #[test]
