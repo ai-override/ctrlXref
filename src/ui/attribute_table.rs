@@ -3,8 +3,12 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::ops::RangeInclusive;
 
-use eframe::egui::{self, Align, Color32, FontFamily, Key, Label, RichText, ScrollArea, Sense, TextEdit, Ui};
+use eframe::egui::text_selection::LabelSelectionState;
+use eframe::egui::{
+    self, Align, Color32, FontFamily, Key, KeyboardShortcut, Label, Modifiers, RichText, ScrollArea, Sense, TextEdit, Ui,
+};
 use egui_extras::TableBuilder;
 
 use super::theme;
@@ -105,6 +109,41 @@ struct Editing {
     focus: bool,
 }
 
+/// How far from the edge of the visible cells a selection drag starts scrolling, in rows.
+const DRAG_SCROLL_ZONE: f32 = 1.;
+
+/// A selection drag's scrolling speed at the edge of the visible cells, in rows per second.
+const DRAG_SCROLL_SPEED: f32 = 12.;
+
+/// The fastest a selection drag scrolls, as a multiple of [`DRAG_SCROLL_SPEED`], reached with
+/// the pointer beyond the edge of the visible cells.
+const DRAG_SCROLL_MAX: f32 = 3.;
+
+/// A rectangle of selected cells, between two `(displayed row, column)` corners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CellSelection {
+    /// Where the selection started.
+    anchor: (usize, usize),
+    /// The corner a drag moves.
+    focus: (usize, usize),
+    /// Whether it is Select All, which is copied with the column headers.
+    all: bool,
+}
+
+impl CellSelection {
+    fn rows(&self) -> RangeInclusive<usize> {
+        self.anchor.0.min(self.focus.0)..=self.anchor.0.max(self.focus.0)
+    }
+
+    fn columns(&self) -> RangeInclusive<usize> {
+        self.anchor.1.min(self.focus.1)..=self.anchor.1.max(self.focus.1)
+    }
+
+    fn contains(&self, row_ix: usize, col_ix: usize) -> bool {
+        self.rows().contains(&row_ix) && self.columns().contains(&col_ix)
+    }
+}
+
 /// What happened in the table this frame.
 #[derive(Default)]
 pub struct TableOutput {
@@ -130,6 +169,10 @@ pub struct AttributeTable {
     editing: Option<Editing>,
     /// Committed edits not yet taken by the owner.
     edits: Vec<CellEdit>,
+    /// The cells selected with a drag or Select All. Replaces the highlight of the selected row.
+    selection: Option<CellSelection>,
+    /// Whether the mouse is dragging `selection`'s focus.
+    dragging: bool,
 }
 
 impl AttributeTable {
@@ -143,7 +186,79 @@ impl AttributeTable {
             exact_titles: HashSet::new(),
             editing: None,
             edits: Vec::new(),
+            selection: None,
+            dragging: false,
         }
+    }
+
+    /// Clears the selected cells, leaving only the selected row.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+        self.dragging = false;
+    }
+
+    /// Ctrl+A selects all cells, and Ctrl+C copies the selected cells or else displayed row
+    /// `selected`. Leaves the keys to the text field that has the keyboard, and Ctrl+C to any
+    /// selected label text, which egui copies itself.
+    pub fn shortcuts(&mut self, ctx: &egui::Context, selected: Option<usize>) {
+        if self.editing.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let select_all = KeyboardShortcut::new(Modifiers::CTRL, Key::A);
+        if ctx.input_mut(|input| input.consume_shortcut(&select_all)) && !self.rows.is_empty() {
+            self.selection = Some(CellSelection {
+                anchor: (0, 0),
+                focus: (self.rows.len() - 1, self.columns.len() - 1),
+                all: true,
+            });
+            self.dragging = false;
+            clear_label_selection(ctx);
+        }
+        let copy = ctx.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Copy)));
+        let label_selected = ctx.with_plugin(|labels: &mut LabelSelectionState| labels.has_selection());
+        if copy
+            && label_selected != Some(true)
+            && let Some(text) = self.selection_text(selected)
+        {
+            ctx.copy_text(text);
+        }
+    }
+
+    /// The selected cells, or else displayed row `selected`, as tab-separated text in the
+    /// displayed order. Only Select All has the column headers as its first line.
+    fn selection_text(&self, selected: Option<usize>) -> Option<String> {
+        let (rows, columns, all) = match self.selection {
+            Some(selection) => (selection.rows(), selection.columns(), selection.all),
+            None => {
+                let row = selected.filter(|row| *row < self.rows.len())?;
+                (row..=row, 0..=self.columns.len().checked_sub(1)?, false)
+            }
+        };
+        let headers = all.then(|| self.headers());
+        let cells = self.rows[rows].iter().map(|row| row.cells[columns.clone()].to_vec());
+        Some(ctrlxref::csv::to_tsv(headers.into_iter().chain(cells)))
+    }
+
+    /// Where a selection drag points, inside the visible cells, while it goes on. Scrolls
+    /// them when the pointer is near or beyond their edge. Call inside the table body, whose
+    /// scroll areas take the scrolling.
+    fn drag_position(&mut self, ui: &Ui, zone: f32) -> Option<egui::Pos2> {
+        if !self.dragging {
+            return None;
+        }
+        let (down, pos, dt) = ui.input(|input| (input.pointer.primary_down(), input.pointer.latest_pos(), input.stable_dt));
+        if !down {
+            self.dragging = false;
+            return None;
+        }
+        let pos = pos?;
+        let visible = ui.clip_rect();
+        let delta = drag_scroll(pos, visible, zone, dt);
+        if delta != egui::Vec2::ZERO {
+            ui.scroll_with_delta_animation(delta, egui::style::ScrollAnimation::none());
+            ui.ctx().request_repaint();
+        }
+        Some(visible.clamp(pos))
     }
 
     /// Makes the cells of the columns with these keys editable with a double-click.
@@ -269,8 +384,9 @@ impl AttributeTable {
             self.sort = None;
         }
         self.apply_sort();
-        // The rows the editor was opened on are gone.
+        // The rows the editor and the selection were on are gone.
         self.editing = None;
+        self.clear_selection();
     }
 
     /// The displayed row index of the element at `source_ix` in the last `set_rows` slice.
@@ -332,6 +448,8 @@ impl AttributeTable {
     fn set_sort(&mut self, col_ix: usize, sort: ColumnSort) {
         self.sort = Some((col_ix, sort));
         self.apply_sort();
+        // The selected rows moved.
+        self.clear_selection();
     }
 
     /// Draws the table filling `ui`, with displayed row `selected` highlighted and, when
@@ -358,7 +476,7 @@ impl AttributeTable {
                     .id_salt(table_id)
                     .striped(true)
                     .resizable(true)
-                    .sense(Sense::click())
+                    .sense(Sense::click_and_drag())
                     .auto_shrink(false)
                     .cell_layout(egui::Layout::left_to_right(Align::Center));
                 for column in &self.columns {
@@ -418,20 +536,48 @@ impl AttributeTable {
                             });
                         }
                     })
-                    .body(|body| {
+                    .body(|mut body| {
+                        let drag = self.drag_position(body.ui_mut(), row_height * DRAG_SCROLL_ZONE);
+                        // The last drawn row and column that start before the drag's position.
+                        let (mut drag_row, mut drag_col) = (None, None);
                         body.rows(row_height, self.rows.len(), |mut row| {
                             let row_ix = row.index();
-                            row.set_selected(selected == Some(row_ix));
+                            row.set_selected(selected == Some(row_ix) && self.selection.is_none());
                             for col_ix in 0..self.columns.len() {
                                 let (_, response) = row.col(|ui| self.cell_ui(ui, row_ix, col_ix));
+                                if let Some(pos) = drag {
+                                    if pos.y >= response.rect.top() {
+                                        drag_row = Some(row_ix);
+                                    }
+                                    if pos.x >= response.rect.left() {
+                                        drag_col = Some(col_ix);
+                                    }
+                                }
                                 if response.clicked() {
                                     out.clicked_row = Some(row_ix);
+                                    self.clear_selection();
+                                    clear_label_selection(&response.ctx);
+                                }
+                                if response.drag_started_by(egui::PointerButton::Primary) {
+                                    // The tree stays on the row where the drag started.
+                                    out.clicked_row = Some(row_ix);
+                                    self.selection = Some(CellSelection {
+                                        anchor: (row_ix, col_ix),
+                                        focus: (row_ix, col_ix),
+                                        all: false,
+                                    });
+                                    self.dragging = true;
+                                    clear_label_selection(&response.ctx);
                                 }
                                 if response.double_clicked() {
                                     self.start_edit(row_ix, col_ix);
                                 }
                             }
                         });
+                        if let Some(selection) = &mut self.selection {
+                            selection.focus.0 = drag_row.unwrap_or(selection.focus.0);
+                            selection.focus.1 = drag_col.unwrap_or(selection.focus.1);
+                        }
                     });
                 if let Some((col_ix, choice)) = sort_picked {
                     match choice {
@@ -467,7 +613,13 @@ impl AttributeTable {
             return;
         }
         let text = &self.rows[row_ix].cells[col_ix];
-        let rich = match self.rows[row_ix].styles[col_ix] {
+        let cell_selected = self.selection.is_some_and(|selection| selection.contains(row_ix, col_ix));
+        if cell_selected {
+            let rect = ui.max_rect().expand2(ui.spacing().item_spacing * 0.5);
+            ui.painter().rect_filled(rect, 0., ui.visuals().selection.bg_fill);
+        }
+        let style = self.rows[row_ix].styles[col_ix].filter(|style| !(cell_selected && *style == CellStyle::Conflict));
+        let rich = match style {
             Some(CellStyle::Conflict) => {
                 // Covers the whole cell, padding included.
                 let rect = ui.max_rect().expand2(ui.spacing().item_spacing * 0.5);
@@ -481,6 +633,22 @@ impl AttributeTable {
         };
         ui.add(Label::new(rich).selectable(false).truncate());
     }
+}
+
+/// Clears selected label text, such as in the status bar or a help window, so that Ctrl+C goes
+/// to the table again.
+fn clear_label_selection(ctx: &egui::Context) {
+    ctx.with_plugin(|labels: &mut LabelSelectionState| labels.clear_selection());
+}
+
+/// How far to scroll for a selection drag at `pos` this frame: nothing while it is further than
+/// `zone` inside `visible`, else more the further out it is, up to [`DRAG_SCROLL_MAX`].
+fn drag_scroll(pos: egui::Pos2, visible: egui::Rect, zone: f32, dt: f32) -> egui::Vec2 {
+    let axis = |pos: f32, min: f32, max: f32| {
+        let beyond = (pos - (max - zone)).max(0.) - ((min + zone) - pos).max(0.);
+        -(beyond / zone).clamp(-DRAG_SCROLL_MAX, DRAG_SCROLL_MAX) * DRAG_SCROLL_SPEED * zone * dt
+    };
+    egui::vec2(axis(pos.x, visible.left(), visible.right()), axis(pos.y, visible.top(), visible.bottom()))
 }
 
 /// Room at a header cell's right edge for its [`sort_arrows`].
@@ -680,6 +848,201 @@ mod tests {
         click_header(&mut table, 1, on_arrows);
         assert_eq!(column(&table, 1), ["a", "b", "c"]);
         assert_eq!(table.sort, Some((1, ColumnSort::Ascending)));
+    }
+
+    /// `count` rows of cells `<name><row>` for each of `names`.
+    fn table_of(names: &[&str], count: usize) -> AttributeTable {
+        let rows: Vec<TableRow> = (0..count)
+            .map(|row| TableRow {
+                tag: "a".into(),
+                cells: names.iter().map(|name| (name.to_string(), format!("{name}{row}"))).collect(),
+                styles: Vec::new(),
+            })
+            .collect();
+        let mut table = AttributeTable::new();
+        table.set_rows(names, &rows);
+        table
+    }
+
+    /// Runs a table headless, one frame per call, like the app does.
+    struct Headless {
+        ctx: egui::Context,
+        screen: egui::Rect,
+        header_rects: Vec<egui::Rect>,
+        row_step: f32,
+    }
+
+    impl Headless {
+        fn new(table: &mut AttributeTable, width: f32, height: f32) -> Self {
+            let ctx = egui::Context::default();
+            crate::ui::setup_fonts(&ctx);
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+            let mut headless = Self { ctx, screen, header_rects: Vec::new(), row_step: 0. };
+            for _ in 0..3 {
+                headless.frame(table, Vec::new(), None);
+            }
+            headless
+        }
+
+        /// One frame with `events`; returns what the table reported and the clipboard text.
+        fn frame(
+            &mut self,
+            table: &mut AttributeTable,
+            events: Vec<egui::Event>,
+            selected: Option<usize>,
+        ) -> (TableOutput, Option<String>) {
+            let input = egui::RawInput { screen_rect: Some(self.screen), events, ..Default::default() };
+            let mut out = TableOutput::default();
+            let mut row_step = 0.;
+            let mut output = self.ctx.run_ui(input, |ui| {
+                row_step = ui.text_style_height(&egui::TextStyle::Body) + 6. + ui.spacing().item_spacing.y;
+                table.shortcuts(ui.ctx(), selected);
+                out = table.show(ui, selected, None);
+            });
+            output.textures_delta.clear();
+            self.row_step = row_step;
+            self.header_rects = out.header_rects.clone();
+            let copied = output.platform_output.commands.iter().find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            });
+            (out, copied)
+        }
+
+        /// The middle of the cell at displayed `row`, `col`, with nothing scrolled.
+        fn cell(&self, row: usize, col: usize) -> egui::Pos2 {
+            let header = self.header_rects[col];
+            egui::pos2(header.center().x, header.bottom() + self.row_step * (row as f32 + 0.5))
+        }
+
+        fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }
+        }
+
+        /// Presses at `from` and moves to `to`, still holding the button, for `frames` frames.
+        /// Returns the row reported on the way.
+        fn drag(&mut self, table: &mut AttributeTable, from: egui::Pos2, to: egui::Pos2, frames: usize) -> Option<usize> {
+            let mut clicked = None;
+            for events in [vec![egui::Event::PointerMoved(from)], vec![Self::press(from, true)], vec![egui::Event::PointerMoved(to)]] {
+                clicked = clicked.or(self.frame(table, events, None).0.clicked_row);
+            }
+            for _ in 0..frames {
+                clicked = clicked.or(self.frame(table, Vec::new(), None).0.clicked_row);
+            }
+            clicked
+        }
+
+        fn release(&mut self, table: &mut AttributeTable, pos: egui::Pos2) {
+            self.frame(table, vec![Self::press(pos, false)], None);
+            self.frame(table, Vec::new(), None);
+        }
+
+        fn ctrl_a(&mut self, table: &mut AttributeTable) {
+            let key = egui::Event::Key {
+                key: Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::CTRL,
+            };
+            self.frame(table, vec![key], None);
+        }
+    }
+
+    #[test]
+    fn dragging_selects_a_rectangle_and_copies_it_without_headers() {
+        let mut table = table_of(&["a", "b", "c"], 6);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        let (from, to) = (headless.cell(4, 2), headless.cell(2, 1));
+
+        // The tree stays on the row where the drag started.
+        assert_eq!(headless.drag(&mut table, from, to, 2), Some(4));
+        assert!(table.dragging);
+        headless.release(&mut table, to);
+        assert!(!table.dragging);
+
+        let selection = table.selection.unwrap();
+        assert_eq!((selection.rows(), selection.columns()), (2..=4, 1..=2));
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], None);
+        assert_eq!(copied.as_deref(), Some("b2\tc2\nb3\tc3\nb4\tc4"));
+    }
+
+    #[test]
+    fn a_click_clears_the_selection_and_ctrl_c_copies_the_selected_row() {
+        let mut table = table_of(&["a", "b"], 3);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        headless.ctrl_a(&mut table);
+        assert!(table.selection.is_some());
+
+        let pos = headless.cell(1, 0);
+        headless.frame(&mut table, vec![egui::Event::PointerMoved(pos)], None);
+        headless.frame(&mut table, vec![Headless::press(pos, true)], None);
+        let (out, _) = headless.frame(&mut table, vec![Headless::press(pos, false)], None);
+        assert_eq!(out.clicked_row, Some(1));
+        assert_eq!(table.selection, None);
+
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], Some(1));
+        assert_eq!(copied.as_deref(), Some("a1\tb1"));
+        // Nothing is selected: the clipboard is left alone.
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], None);
+        assert_eq!(copied, None);
+    }
+
+    #[test]
+    fn select_all_copies_with_headers_in_the_displayed_order() {
+        let rows = attribute_rows(r#"<m><a n="3" k=" "/><a n="1" k="x"/><a n="2" k="y"/></m>"#);
+        let mut table = AttributeTable::new();
+        table.set_rows(&["n", "k"], &rows);
+        table.set_sort(0, ColumnSort::Ascending);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+
+        headless.ctrl_a(&mut table);
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], None);
+        assert_eq!(copied.as_deref(), Some("n\tk\n1\tx\n2\ty\n3\t"));
+
+        // Sorting moves the rows, so the selection goes.
+        table.set_sort(0, ColumnSort::Descending);
+        assert_eq!(table.selection, None);
+    }
+
+    #[test]
+    fn dragging_past_the_edges_scrolls_to_more_cells() {
+        // Only some of the rows and columns fit.
+        let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
+        let mut table = table_of(&names, 300);
+        let mut headless = Headless::new(&mut table, 260., 220.);
+        let from = headless.cell(0, 0);
+        let to = egui::pos2(260., 220.);
+
+        headless.drag(&mut table, from, to, 90);
+        let selection = table.selection.unwrap();
+        assert!(selection.focus.0 > 20, "row {}", selection.focus.0);
+        assert_eq!(selection.focus.1, names.len() - 1);
+
+        // And back to where it started.
+        headless.frame(&mut table, vec![egui::Event::PointerMoved(egui::pos2(0., 0.))], None);
+        for _ in 0..240 {
+            headless.frame(&mut table, Vec::new(), None);
+        }
+        assert_eq!(table.selection.unwrap().focus, (0, 0));
+    }
+
+    #[test]
+    fn the_cell_editor_keeps_the_keyboard() {
+        let mut table = table_of(&["a"], 2);
+        table.set_editable(&["a"]);
+        table.start_edit(0, 0);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+
+        headless.ctrl_a(&mut table);
+        assert_eq!(table.selection, None);
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], Some(1));
+        assert_eq!(copied, None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Writes tables as CSV files with the system's list separator, for spreadsheets.
+//! Writes tables as CSV files with the system's list separator, for spreadsheets, and as
+//! tab-separated text for the clipboard.
 
 use std::path::Path;
 
@@ -66,6 +67,30 @@ fn push_field(out: &mut String, field: &str, separator: char) {
     out.push('"');
 }
 
+/// `rows` as tab-separated text that pastes into table cells, in Excel and in other tables that
+/// split on tabs and line breaks. Fields are never quoted, since simple paste handlers don't
+/// understand quotes: tabs and line breaks in a field become spaces, and blank fields (only
+/// whitespace) are left empty. Rows are separated by `\n`, with none after the last.
+pub fn to_tsv<R, F>(rows: R) -> String
+where
+    R: IntoIterator,
+    R::Item: IntoIterator<Item = F>,
+    F: AsRef<str>,
+{
+    let lines: Vec<String> = rows
+        .into_iter()
+        .map(|row| row.into_iter().map(|field| tsv_field(field.as_ref())).collect::<Vec<_>>().join("\t"))
+        .collect();
+    lines.join("\n")
+}
+
+fn tsv_field(field: &str) -> String {
+    if field.trim().is_empty() {
+        return String::new();
+    }
+    field.replace("\r\n", " ").replace(['\t', '\r', '\n'], " ")
+}
+
 /// Writes `csv` to `path` as UTF-8 with a byte order mark, so Excel reads it as UTF-8.
 pub fn save(csv: &str, path: &Path) -> Result<()> {
     let mut bytes = Vec::with_capacity(csv.len() + 3);
@@ -93,6 +118,13 @@ mod tests {
             to_csv(rows, ';'),
             "map;name;keyboard\r\nspaceship;fire;kb1_a, kb1_b\r\nx;\"say \"\"hi\"\"\";\r\n"
         );
+    }
+
+    #[test]
+    fn tsv_keeps_rows_and_columns_aligned() {
+        let rows = [vec!["a", " ", "tab\there"], vec!["two\r\nlines", "say \"hi\"", "one\nmore"]];
+        assert_eq!(to_tsv(rows), "a\t\ttab here\ntwo lines\tsay \"hi\"\tone more");
+        assert_eq!(to_tsv([["only"]]), "only");
     }
 
     #[test]

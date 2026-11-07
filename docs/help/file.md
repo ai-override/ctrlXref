@@ -72,6 +72,26 @@ profile and can't be edited.
 
 The edits stay in memory until you save the rebind file.
 
+## Selecting and copying cells in the table
+
+Copied cells paste into Excel and other tables as separate cells.
+
+- **Drag** with the mouse to select a rectangle of cells. Dragging near or past the table's
+  edge scrolls it. The tree stays on the row where the drag started.
+- **Ctrl+A** selects the whole table.
+- **Ctrl+C** copies the selected cells in the order shown. With no cells selected, it copies
+  the selected row.
+- Only **Ctrl+A** copies the column headers too.
+- Clicking a cell, using the tree or the arrow keys, sorting, or changing the table clears the
+  selection.
+
+The text is tab-separated, with a line for each row. Tabs and line breaks inside a cell become
+spaces, and blank cells stay empty, so the rows and columns stay lined up. Excel may read a
+value that starts with `=`, `+`, `-` or `@` as a formula.
+
+A Java `JTable` can only paste if its application adds that: `JTable` copies by itself but
+doesn't paste. Handlers for this usually split on tabs and line breaks, which fits this text.
+
 ## Save Rebind File (Ctrl+S)
 
 Writes the open rebind file back to where it was opened from, including the bindings that

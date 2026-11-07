@@ -515,6 +515,7 @@ impl CtrlXrefApp {
         };
         self.selected = Some(id);
         self.scroll_table_to = first_row;
+        self.table.clear_selection();
     }
 
     /// Table selection moved to displayed `row_ix`: select and reveal its action in the tree.
@@ -544,6 +545,7 @@ impl CtrlXrefApp {
             (Some(row), false) => (row + 1).min(last),
             (None, _) => 0,
         };
+        self.table.clear_selection();
         self.select_in_table(row);
         self.scroll_table_to = Some(row);
     }
@@ -1233,6 +1235,10 @@ impl CtrlXrefApp {
         };
         panel_header(ui, title);
         let selected = self.selected_row();
+        // An open dialog is modal, and has its own text to copy.
+        if self.dialogs.is_empty() {
+            self.table.shortcuts(ui.ctx(), selected);
+        }
         let scroll_to = self.scroll_table_to.take();
         let out = self.table.show(ui, selected, scroll_to);
         if let Some(row_ix) = out.clicked_row {
