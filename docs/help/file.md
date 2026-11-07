@@ -99,8 +99,8 @@ doesn't paste. Handlers for this usually split on tabs and line breaks, which fi
 
 **Ctrl+F** opens the **Search** dialog, which stays open while you use the table.
 
-- **F3** or **Find Next**, or **Enter** in the text field, goes to the next match. **Shift+F3**
-  or **Find Previous**, or **Shift+Enter**, goes to the previous one. **F3** and **Shift+F3**
+- **F3** or **Find Next >>**, or **Enter** in the text field, goes to the next match. **Shift+F3**
+  or **<< Find Prev**, or **Shift+Enter**, goes to the previous one. **F3** and **Shift+F3**
   also open the dialog when it is closed.
 - **Mark All** highlights everything with a match, in the table and the tree. An actionmap is
   also highlighted when it holds a match, so collapsed ones show it. **F3** and **Shift+F3** step

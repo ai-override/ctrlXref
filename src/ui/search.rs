@@ -209,11 +209,11 @@ impl SearchDialog {
                 ui.add_space(4.);
                 ui.horizontal(|ui| {
                     let can_search = !self.is_blank() && self.regex().is_some();
-                    if ui.add_enabled(can_search, egui::Button::new("Find Next")).clicked() {
-                        action = Some(SearchAction::FindNext);
-                    }
-                    if ui.add_enabled(can_search, egui::Button::new("Find Previous")).clicked() {
+                    if ui.add_enabled(can_search, egui::Button::new("<< Find Prev")).clicked() {
                         action = Some(SearchAction::FindPrevious);
+                    }
+                    if ui.add_enabled(can_search, egui::Button::new("Find Next >>")).clicked() {
+                        action = Some(SearchAction::FindNext);
                     }
                     if ui.add_enabled(can_search, egui::Button::new("Mark All")).clicked() {
                         action = Some(SearchAction::MarkAll);
