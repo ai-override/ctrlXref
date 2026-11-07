@@ -1,3 +1,4 @@
+pub mod control_names;
 pub mod csv;
 pub mod extract;
 pub mod game_dir;

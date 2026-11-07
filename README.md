@@ -22,6 +22,7 @@ A Windows desktop tool for viewing and editing [Star Citizen](https://robertsspa
 - Browse all ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, using the game's own `English labels.`
 - See default bindings side by side with your rebinds for keyboard, mouse, joysticks and gamepad.
 - Edit bindings directly in the table, with possible conflicts shown in red.
+- List the game's localized control names in a sortable table.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
 - Search the table and the tree with regular expressions (`Ctrl+F`, `F3`, `Shift+F3`), keeping previous searches in a dropdown list.
 - Open the game's current `actionmaps.xml` or any mappings file you exported from the game.

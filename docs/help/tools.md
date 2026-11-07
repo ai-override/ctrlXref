@@ -1,9 +1,10 @@
 # Tools menu
 
-The Tools menu finds free keyboard combinations, assigns them to actions that have no
-keyboard binding, and exports the actions to a spreadsheet file or a structured JSON file.
+The Tools menu finds free keyboard combinations, lists the game's names for its controls, assigns
+combinations to actions that have no keyboard binding, and exports the actions to a spreadsheet file or a structured JSON file.
 
-All tools need the profile to be open (**File > Open defaultProfile**).
+All tools except **Show Control Names** need the profile to be open (**File > Open
+defaultProfile**).
 
 ## Key combinations
 
@@ -28,6 +29,21 @@ says how many combinations are unused and which files' bindings were counted:
 - the game's current rebind file, when it is not the open one
 
 The **Copy** button copies the summary and the whole list.
+
+## Show Control Names
+
+Opens a window that lists the game's names for its controls, centered on the main window. It
+reads `keybinding_localization.xml` next to the open profile, or else
+`<game folder>\Data\Libs\Config\keybinding_localization.xml`.
+
+- The columns are **name**, **localizationString** and **shortLocString**. Their `@key` references
+  are replaced with the English texts of `global.ini`. A reference the game has no text for stays
+  as it is. Few controls have a short name.
+- The same name can be on several devices, such as `button21`. The localized text tells them apart.
+- Click a column header to sort: ascending, descending, then the file's order. Right-click it to
+  choose.
+- Selecting and copying work as in the main table: drag, **Ctrl+A**, **Ctrl+C** and the
+  right-click menu.
 
 ## Autofill All Unbound Keyboard Controls
 

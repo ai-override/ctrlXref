@@ -86,6 +86,10 @@ pub fn has_extraction_tools(dir: &Path) -> bool {
 /// where Extract Defaults unpacks it.
 pub const DEFAULT_PROFILE: &str = r"Data\Libs\Config\defaultProfile.xml";
 
+/// The game's names for its controls, relative to the game folder, where Extract Defaults
+/// unpacks them next to the default profile.
+pub const CONTROL_NAMES: &str = r"Data\Libs\Config\keybinding_localization.xml";
+
 /// The English localization texts the profiles' `@key` labels refer to, relative to the
 /// game folder, where Extract Defaults unpacks them.
 pub const ENGLISH_STRINGS: &str = r"Data\Localization\english\global.ini";

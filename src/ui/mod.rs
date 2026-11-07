@@ -2,6 +2,7 @@
 
 mod app;
 mod attribute_table;
+mod control_names;
 mod help;
 mod menus;
 mod search;

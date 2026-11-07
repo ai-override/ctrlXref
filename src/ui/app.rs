@@ -22,6 +22,7 @@ use egui_commonmark::CommonMarkCache;
 use xmltree::{Element, XMLNode};
 
 use super::attribute_table::{self, AttributeTable, CellEdit, CellStyle, TableRow};
+use super::control_names::{self, ControlNamesWindow};
 use super::help::{self, HelpTopic};
 use super::menus::{self, Command, ThemeChoice};
 use super::search::{SearchAction, SearchDialog};
@@ -316,6 +317,8 @@ pub struct CtrlXrefApp {
     rebinds_modified: bool,
     /// The changes to the open rebind file that Ctrl+Z can undo.
     undo: UndoStack,
+    /// The Tools > Show Control Names window, while it is open.
+    control_names: Option<ControlNamesWindow>,
 }
 
 impl CtrlXrefApp {
@@ -355,6 +358,7 @@ impl CtrlXrefApp {
             marked: HashSet::new(),
             rebinds_modified: false,
             undo: UndoStack::default(),
+            control_names: None,
         }
     }
 
@@ -392,6 +396,7 @@ impl CtrlXrefApp {
             Command::LocateGameFolder => self.locate_game_folder(frame),
             Command::ExtractDefaults => self.extract_defaults(),
             Command::ShowUnusedCombos => self.show_unused_combos(),
+            Command::ShowControlNames => self.show_control_names(),
             Command::AutofillKeyboard => self.autofill_keyboard(),
             Command::ExportCsv => self.export_csv(frame),
             Command::ExportJson => self.export_json(frame),
@@ -1457,6 +1462,76 @@ impl CtrlXrefApp {
         });
     }
 
+    /// Shows the game's names for its controls in a window of its own, centered on the main
+    /// window, bringing that window forward where it is when it is already open. The file comes
+    /// from next to the open profile, else from the game folder.
+    fn show_control_names(&mut self) {
+        if self.control_names.is_some() {
+            self.ctx.send_viewport_cmd_to(control_names::viewport_id(), ViewportCommand::Focus);
+            return;
+        }
+        let file_name = Path::new(game_dir::CONTROL_NAMES).file_name().expect("a file name");
+        let next_to_profile =
+            self.document.as_ref().and_then(|doc| doc.path.parent()).map(|config| config.join(file_name));
+        let in_game_dir = self.valid_game_dir().map(|dir| dir.join(game_dir::CONTROL_NAMES));
+        let Some(path) = next_to_profile.into_iter().chain(in_game_dir).find(|path| path.is_file()) else {
+            self.notify(
+                Level::Warning,
+                format!(
+                    "{} not found next to the profile or in the game folder; \
+                     extract it with Source > Extract Defaults from Data.p4k Package",
+                    file_name.to_string_lossy()
+                ),
+            );
+            return;
+        };
+        let root = match xml_doc::load(&path) {
+            Ok(root) => root,
+            Err(err) => {
+                self.notify(Level::Error, format!("{err:#}"));
+                return;
+            }
+        };
+        let strings_path = find_strings_file(&path, self.game_dir.as_deref());
+        let strings: Rc<Strings> = match &strings_path {
+            Some(strings_path) => self.load_strings(strings_path),
+            None => Rc::default(),
+        };
+        if strings.is_empty() {
+            self.notify(Level::Warning, format!("No {STRINGS_FILE} texts found, so the names show their @keys"));
+        }
+        let names = ctrlxref::control_names::read(&root, &strings);
+        let position = self.ctx.input(|input| {
+            let main = input.viewport();
+            Some(centered_position(main.outer_rect?, main.inner_rect?, control_names::SIZE))
+        });
+        self.control_names = Some(ControlNamesWindow::new(&names, position));
+    }
+
+    /// Shows the Show Control Names window in a native window of its own, while it is open.
+    fn control_names_window(&mut self, ctx: &Context) {
+        let Some(window) = &mut self.control_names else {
+            return;
+        };
+        let mut builder = ViewportBuilder::default()
+            .with_title(control_names::TITLE)
+            .with_inner_size(control_names::SIZE)
+            .with_min_inner_size([400., 300.]);
+        if let Some(position) = window.position {
+            builder = builder.with_position(position);
+        }
+        if let Some(icon) = &self.icon {
+            builder = builder.with_icon(icon.clone());
+        }
+        let close = ctx.show_viewport_immediate(control_names::viewport_id(), builder, |ui, _| {
+            window.show(ui);
+            ui.input(|input| input.viewport().close_requested())
+        });
+        if close {
+            self.control_names = None;
+        }
+    }
+
     /// Shows the help page `topic` in its own window, centered on the main window, bringing that
     /// window forward where it is when it is already open.
     fn show_help(&mut self, topic: HelpTopic) {
@@ -1465,7 +1540,7 @@ impl CtrlXrefApp {
         } else {
             let position = self.ctx.input(|input| {
                 let main = input.viewport();
-                Some(help_position(main.outer_rect?, main.inner_rect?, HELP_SIZE))
+                Some(centered_position(main.outer_rect?, main.inner_rect?, HELP_SIZE))
             });
             self.help_open.push((topic, position));
         }
@@ -1798,17 +1873,18 @@ impl eframe::App for CtrlXrefApp {
         self.dialog(&ctx);
         self.toasts(&ctx);
         self.help_windows(&ctx);
+        self.control_names_window(&ctx);
         if let Some(command) = command {
             self.run(command, frame);
         }
     }
 }
 
-/// Where a help window with content of `size` goes, centered on the main window, given the main
-/// window with its frame (`outer`) and without (`inner`). The help window's frame is taken to be
-/// like the main window's. A window taller than the main one starts at the main window's top
-/// instead of above it, so its title bar stays as reachable.
-fn help_position(outer: egui::Rect, inner: egui::Rect, size: egui::Vec2) -> egui::Pos2 {
+/// Where a window with content of `size` goes, centered on the main window, given the main
+/// window with its frame (`outer`) and without (`inner`). The window's frame is taken to be like
+/// the main window's. A window taller than the main one starts at the main window's top instead
+/// of above it, so its title bar stays as reachable.
+fn centered_position(outer: egui::Rect, inner: egui::Rect, size: egui::Vec2) -> egui::Pos2 {
     let framed = size + (outer.size() - inner.size());
     let centered = outer.center() - framed / 2.;
     egui::pos2(centered.x, centered.y.max(outer.top()))
@@ -1927,7 +2003,7 @@ fn highlighted(ui: &egui::Ui, message: &str, phrase: &str) -> egui::text::Layout
     job
 }
 
-fn panel_header(ui: &mut egui::Ui, title: String) {
+pub(super) fn panel_header(ui: &mut egui::Ui, title: String) {
     ui.add_space(2.);
     let text = if ui.visuals().dark_mode { theme::heading_text(&title) } else { RichText::new(title).strong() };
     ui.label(text);
@@ -2788,6 +2864,32 @@ mod tests {
     </profile>"#;
 
     #[test]
+    fn control_names_come_from_next_to_the_profile_and_warn_when_missing() {
+        let (mut app, dir, _) = app_with_rebinds("control-names");
+        app.game_dir = None;
+        app.toasts.clear();
+
+        app.show_control_names();
+        assert!(app.control_names.is_none());
+        assert_eq!(app.toasts.len(), 1);
+        assert!(app.toasts[0].level == super::Level::Warning);
+
+        let file = dir.join("keybinding_localization.xml");
+        std::fs::write(&file, r#"<LocalizedKeys><device name="keyboard"><Key name="a"/></device></LocalizedKeys>"#).unwrap();
+        app.show_control_names();
+        assert!(app.control_names.is_some());
+
+        // Not valid XML, like a file that was not converted when it was extracted.
+        app.control_names = None;
+        app.toasts.clear();
+        std::fs::write(&file, b"CryXmlB\0...").unwrap();
+        app.show_control_names();
+        assert!(app.control_names.is_none());
+        assert!(app.toasts.iter().any(|toast| toast.level == super::Level::Error));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn help_windows_open_centered_on_the_main_window() {
         use eframe::egui::{Rect, pos2, vec2};
         // A frame of 8 at the sides and the bottom, and a 32 high title bar.
@@ -2799,19 +2901,19 @@ mod tests {
 
         // Taller than the help window, whose frame is taken to be the same size.
         let (outer, inner) = frame(100., 50., 1200., 900.);
-        let position = super::help_position(outer, inner, vec2(760., 720.));
+        let position = super::centered_position(outer, inner, vec2(760., 720.));
         let help = Rect::from_min_size(position, vec2(760., 720.) + vec2(16., 40.));
         assert_eq!(help.center(), outer.center());
 
         // Lower than the help window: it starts at the same top, still centered sideways.
         let (outer, inner) = frame(100., 50., 1200., 400.);
-        let position = super::help_position(outer, inner, vec2(760., 720.));
+        let position = super::centered_position(outer, inner, vec2(760., 720.));
         assert_eq!(position.y, outer.top());
         assert_eq!(position.x + (760. + 16.) / 2., outer.center().x);
 
         // Narrower: it overlaps both sides evenly.
         let (outer, inner) = frame(500., 50., 640., 900.);
-        let position = super::help_position(outer, inner, vec2(760., 720.));
+        let position = super::centered_position(outer, inner, vec2(760., 720.));
         assert_eq!(position.x + (760. + 16.) / 2., outer.center().x);
     }
 
