@@ -1091,8 +1091,8 @@ impl CtrlXrefApp {
                  current game installation, so the default profile can be updated every time the \
                  game release is updated.\n\n\
                  It can also sequentially bind every missing keyboard controls automatically, for devices and \
-                 applications whose plugins read the bound keys straight from the game engine or its logs.\
-                 These automatic key bindings are not intended to be used through a real keyboard device\
+                 applications whose plugins read the bound keys straight from the game engine or its logs. \
+                 These automatic key bindings are not intended to be used through a real keyboard device \
                  as they are not any way ergonomic or thought after instead just picked from the \
                  unused key combination list. NOTE: The huge number of controls inside the game \
                  (1103 as the time of writing) forces the use of some three key combinations also.\n\n\
