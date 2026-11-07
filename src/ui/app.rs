@@ -1079,18 +1079,26 @@ impl CtrlXrefApp {
             title: "About ctrlXref".into(),
             message: format!(
                 "ctrlXref {}\n\n\
-                 ctrlXref is a simple tool for resolving missing and conflicting control bindings \
-                 of the Roberts Space Industries game Star Citizen.\n\n\
-                 Various devices and applications, such as Stream Decks, Game Glass and iCUE, send \
-                 keyboard events to the game engine. Resolving missing or overlapping controls with \
-                 the game's integrated configurator has always been messy and confusing. This tool \
+                 ctrlXref is a simple tool aiming to help in resolving missing, conflicting or unintended control bindings \
+                 of the Cloud Imperium Games / Roberts Space Industries Star Citizen (Alpha) game.\n\n\
+                 Various applications and devices, such as Stream Decks, Game Glass, iCUE etc. send \
+                 keyboard (and possibly also mouse and joystick) events to the game engine. \
+                 Resolving missing or overlapping controls with the game's integrated controls \
+                 configurator has always been quite messy and confusing. This tool \
                  shows the game's default control bindings and the user's modified (rebind) \
-                 settings together in one tree and table view.\n\n\
+                 settings together in one tree and freely sortable table view.\n\n\
                  With the external unp4k tools, ctrlXref can extract the default settings from the \
                  current game installation, so the default profile can be updated every time the \
-                 game is updated.\n\n\
-                 It can also bind every missing keyboard control automatically, for devices and \
-                 applications whose plugins read the bound keys straight from the game engine.",
+                 game release is updated.\n\n\
+                 It can also sequentially bind every missing keyboard controls automatically, for devices and \
+                 applications whose plugins read the bound keys straight from the game engine or its logs.\
+                 These automatic key bindings are not intended to be used through a real keyboard device\
+                 as they are not any way ergonomic or thought after instead just picked from the \
+                 unused key combination list. NOTE: The huge number of controls inside the game \
+                 (1103 as the time of writing) forces the use of some three key combinations also.\n\n\
+                 Editing / modifying the bindings is supported but not really refined as this tool \
+                 is not intended to replace the game internal control modification features and \
+                 other already existing 3rd party applications already handling the task better.",
                 env!("CTRLXREF_VERSION")
             ),
             warning: false,
