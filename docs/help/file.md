@@ -163,8 +163,8 @@ is the more up-to-date of the two:
 The file browser starts in the game's mappings folder with
 `layout_all_blank_complete.xml` filled in. After saving, a message offers **Open Rebind
 File** to open the new file for editing, and **Open in Explorer** to show it in File
-Explorer. Opening it replaces a rebind file already open, and changes to that file that were
-not saved are lost. **Close** leaves the new file unopened; you can open it later with
+Explorer. Opening it replaces a rebind file already open, after asking about changes to that
+file that were not saved (see **Close**). **Close** leaves the new file unopened; you can open it later with
 **Open Custom Rebind File...**.
 
 Empty rebinds such as `kb1_ ` (or the blank layout's `device="keyboard" input=" "`) are
@@ -174,8 +174,12 @@ and editing the cell replaces them.
 
 ## Close (Ctrl+W)
 
-Closes the profile and the rebind file and empties the tree and the table. Changes that
-were not saved are lost.
+Closes the profile and the rebind file and empties the tree and the table.
+
+When the open rebind file has changes that are not saved, closing it first asks what to do:
+**Save** saves them and goes on, **Close Without Saving** leaves the file as it was, and
+**Cancel** goes back. Opening another profile or rebind file asks the same, after you have picked
+the file, with **Open Without Saving**. If the other file can't be opened, your changes stay.
 
 ## Theme
 

@@ -148,8 +148,39 @@ enum DialogAction {
     Copy(String),
     ShowInExplorer(PathBuf),
     OpenRebindFile(PathBuf),
-    SaveAndExit,
-    ExitWithoutSaving,
+    /// Saves the open rebind file, and then does what was asked if that worked.
+    SaveThen(AfterPrompt),
+    /// Does what was asked without saving the open rebind file.
+    DiscardThen(AfterPrompt),
+}
+
+/// What was asked when [`unsaved_rebinds_warning`] came up, to do once it is answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AfterPrompt {
+    Exit,
+    CloseFile,
+    OpenProfile(PathBuf),
+    OpenRebind(PathBuf),
+}
+
+impl AfterPrompt {
+    /// The end of the question, "Save them before ...?".
+    fn question(&self) -> &'static str {
+        match self {
+            Self::Exit => "exiting",
+            Self::CloseFile => "closing the file",
+            Self::OpenProfile(_) | Self::OpenRebind(_) => "opening the other file",
+        }
+    }
+
+    /// The label of the button that goes on without saving.
+    fn discard_label(&self) -> &'static str {
+        match self {
+            Self::Exit => "Exit Without Saving",
+            Self::CloseFile => "Close Without Saving",
+            Self::OpenProfile(_) | Self::OpenRebind(_) => "Open Without Saving",
+        }
+    }
 }
 
 /// A modal message box; with `confirm`, it has that button and a cancel button, and with
@@ -244,7 +275,8 @@ pub struct CtrlXrefApp {
     search: SearchDialog,
     /// Tree ids of what Mark All marked; the table has its rows' marks itself.
     marked: HashSet<String>,
-    /// Whether the open rebind file has changes that are not saved to it, which exiting asks about.
+    /// Whether the open rebind file has changes that are not saved to it, which exiting, closing
+    /// the file and opening another one ask about.
     rebinds_modified: bool,
 }
 
@@ -314,7 +346,7 @@ impl CtrlXrefApp {
             Command::SaveRebindFile => self.save_rebind_file(),
             Command::SaveRebindCopyAs => self.save_rebind_copy_as(frame),
             Command::CreateBlankRebindFile => self.create_blank_rebind_file(frame),
-            Command::CloseFile => self.close_file(),
+            Command::CloseFile => self.unless_unsaved(AfterPrompt::CloseFile),
             Command::Quit => self.ctx.send_viewport_cmd(ViewportCommand::Close),
             Command::Theme(choice) => self.set_theme(choice),
             Command::ToggleTheme => self.toggle_theme(),
@@ -744,10 +776,7 @@ impl CtrlXrefApp {
             }
         }
         if let Some(path) = dialog.pick_file() {
-            // A file picked by hand replaces a startup profile still waiting to open.
-            self.startup_profile = None;
-            self.startup_rebind = None;
-            self.open_path(path);
+            self.unless_unsaved(AfterPrompt::OpenProfile(path));
         }
     }
 
@@ -773,7 +802,7 @@ impl CtrlXrefApp {
             self.dialogs.push(no_game_dir_warning());
             return;
         };
-        self.open_rebind_path(dir.join(game_dir::CURRENT_REBIND));
+        self.unless_unsaved(AfterPrompt::OpenRebind(dir.join(game_dir::CURRENT_REBIND)));
     }
 
     /// Asks for a rebind file, starting in the game's [`game_dir::MAPPINGS_DIR`] where it
@@ -795,7 +824,7 @@ impl CtrlXrefApp {
             dialog = dialog.set_directory(start);
         }
         if let Some(path) = dialog.pick_file() {
-            self.open_rebind_path(path);
+            self.unless_unsaved(AfterPrompt::OpenRebind(path));
         }
     }
 
@@ -857,18 +886,53 @@ impl CtrlXrefApp {
             return;
         }
         self.ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+        self.ask_about_unsaved(AfterPrompt::Exit);
+    }
+
+    /// Does `after` right away, or with rebinds that are not saved, once the user has answered
+    /// what to do with them.
+    fn unless_unsaved(&mut self, after: AfterPrompt) {
+        if self.rebinds_modified {
+            self.ask_about_unsaved(after);
+        } else {
+            self.proceed(after);
+        }
+    }
+
+    /// Asks what to do with the rebinds that are not saved, in front of any other message box,
+    /// unless that is being asked already.
+    fn ask_about_unsaved(&mut self, after: AfterPrompt) {
         let asking = self.dialogs.iter().any(|dialog| {
-            matches!(dialog.confirm, Some((_, _, DialogAction::SaveAndExit)))
+            matches!(dialog.confirm, Some((_, _, DialogAction::SaveThen(_))))
         });
         if !asking {
             let path = self.document.as_ref().and_then(|doc| doc.rebind_path.as_deref());
-            let dialog = unsaved_rebinds_warning(path.unwrap_or(Path::new("")));
+            let dialog = unsaved_rebinds_warning(path.unwrap_or(Path::new("")), after);
             self.dialogs.insert(0, dialog);
         }
     }
 
-    /// Saves the rebind file and exits; if that fails, says so and stays open.
-    fn save_and_exit(&mut self) {
+    /// Does what was asked, which discards any rebinds that are not saved. When a file does not
+    /// open, the document stays, and so does `rebinds_modified`: only opening it clears that.
+    fn proceed(&mut self, after: AfterPrompt) {
+        match after {
+            AfterPrompt::Exit => {
+                self.rebinds_modified = false;
+                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            AfterPrompt::CloseFile => self.close_file(),
+            AfterPrompt::OpenProfile(path) => {
+                // A file picked by hand replaces a startup profile still waiting to open.
+                self.startup_profile = None;
+                self.startup_rebind = None;
+                self.open_path(path);
+            }
+            AfterPrompt::OpenRebind(path) => self.open_rebind_path(path),
+        }
+    }
+
+    /// Saves the rebind file and then does what was asked; if saving fails, says so and stops.
+    fn save_then(&mut self, after: AfterPrompt) {
         let Some(path) = self.rebind_path() else {
             return;
         };
@@ -878,7 +942,7 @@ impl CtrlXrefApp {
         match xml_doc::save(root, &path) {
             Ok(()) => {
                 self.rebinds_modified = false;
-                self.ctx.send_viewport_cmd(ViewportCommand::Close);
+                self.proceed(after);
             }
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
         }
@@ -966,17 +1030,12 @@ impl CtrlXrefApp {
         };
         match xml_doc::save(&root, &path) {
             Ok(()) => {
-                let mut message = format!(
+                let message = format!(
                     "Created {} from {}: added {added} actions from the profile, \
                      removed {removed} not in it.",
                     path.display(),
                     template_path.display()
                 );
-                if self.document.as_ref().is_some_and(|doc| doc.rebind_root.is_some()) {
-                    message.push_str(
-                        "\n\nOpening it replaces the open rebind file; changes not saved are lost.",
-                    );
-                }
                 self.dialogs.push(Dialog::created_rebind(message, &path));
             }
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
@@ -1323,14 +1382,11 @@ impl CtrlXrefApp {
             }
             DialogAction::OpenRebindFile(path) => {
                 if self.has_profile() {
-                    self.open_rebind_path(path);
+                    self.unless_unsaved(AfterPrompt::OpenRebind(path));
                 }
             }
-            DialogAction::SaveAndExit => self.save_and_exit(),
-            DialogAction::ExitWithoutSaving => {
-                self.rebinds_modified = false;
-                self.ctx.send_viewport_cmd(ViewportCommand::Close);
-            }
+            DialogAction::SaveThen(after) => self.save_then(after),
+            DialogAction::DiscardThen(after) => self.proceed(after),
         }
     }
 
@@ -1667,9 +1723,9 @@ fn is_current_rebind(path: &Path) -> bool {
     tail == ["actionmaps.xml", "default", "profiles"]
 }
 
-/// Asks what to do with the changes to the rebind file at `path` before exiting. The game's own
-/// current rebind file gets the warning that saving it has.
-fn unsaved_rebinds_warning(path: &Path) -> Dialog {
+/// Asks what to do with the changes to the rebind file at `path` before doing `after`. The game's
+/// own current rebind file gets the warning that saving it has.
+fn unsaved_rebinds_warning(path: &Path, after: AfterPrompt) -> Dialog {
     let mut message = format!("The rebindings have been modified but not saved:\n{}", path.display());
     if is_current_rebind(path) {
         message.push_str(
@@ -1677,10 +1733,10 @@ fn unsaved_rebinds_warning(path: &Path) -> Dialog {
              modify controls inside the game.",
         );
     }
-    message.push_str("\n\nSave them before exiting?");
+    message.push_str(&format!("\n\nSave them before {}?", after.question()));
     let mut dialog = Dialog::warning("Unsaved rebindings", message);
-    dialog.confirm = Some(("Save", "Cancel", DialogAction::SaveAndExit));
-    dialog.extra = Some(("Exit Without Saving", DialogAction::ExitWithoutSaving));
+    dialog.extra = Some((after.discard_label(), DialogAction::DiscardThen(after.clone())));
+    dialog.confirm = Some(("Save", "Cancel", DialogAction::SaveThen(after)));
     dialog
 }
 
@@ -2464,7 +2520,7 @@ fn count_elements(element: &Element) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIONMAP_TAG, CellStyle, DEFAULT_COLUMN, DEVICES, Rebinds, TableRow, action_key, actionmap_tree, complete_blank_layout, action_paths, actionmap_item, count_elements, readable_name,
+        ACTIONMAP_TAG, AfterPrompt, DialogAction, CellStyle, DEFAULT_COLUMN, DEVICES, Rebinds, TableRow, action_key, actionmap_tree, complete_blank_layout, action_paths, actionmap_item, count_elements, readable_name,
         count_empty_keyboard,
         find_actionmaps, is_current_rebind, parse_cell_inputs, parse_tree_id, read_rebinds, set_device_rebinds,
         set_keyboard_rebind, strings_candidates,
@@ -2619,7 +2675,137 @@ mod tests {
     /// The close commands aside: whether a close request now asks about unsaved rebinds.
     fn close_asks(app: &mut super::CtrlXrefApp) -> bool {
         app.on_close_requested();
-        matches!(app.dialogs.first().and_then(|dialog| dialog.confirm.as_ref()), Some((_, _, super::DialogAction::SaveAndExit)))
+        asked(app) == Some(AfterPrompt::Exit)
+    }
+
+    /// What the question about unsaved rebinds, if it is up, is going to do once answered.
+    fn asked(app: &super::CtrlXrefApp) -> Option<AfterPrompt> {
+        match app.dialogs.first().and_then(|dialog| dialog.confirm.as_ref()) {
+            Some((_, _, DialogAction::SaveThen(after))) => Some(after.clone()),
+            _ => None,
+        }
+    }
+
+    /// Answers the question about unsaved rebinds: saving, or going on without that.
+    fn answer(app: &mut super::CtrlXrefApp, save: bool) {
+        let after = asked(app).expect("the question is up");
+        app.dialogs.remove(0);
+        app.run_dialog_action(if save { DialogAction::SaveThen(after) } else { DialogAction::DiscardThen(after) });
+    }
+
+    #[test]
+    fn closing_asks_about_unsaved_rebinds() {
+        let (mut app, dir, rebind) = app_with_rebinds("close-prompt");
+        edit(&mut app, 0, "keyboard", "kb1_y");
+
+        // Cancel is the dialog's own: it only takes the question away.
+        app.unless_unsaved(AfterPrompt::CloseFile);
+        assert_eq!(asked(&app), Some(AfterPrompt::CloseFile));
+        assert!(app.document.is_some());
+        let dialog = &app.dialogs[0];
+        assert!(dialog.message.ends_with("Save them before closing the file?"), "{}", dialog.message);
+        assert_eq!(dialog.extra.as_ref().map(|(label, _)| *label), Some("Close Without Saving"));
+
+        // Without saving.
+        answer(&mut app, false);
+        assert!(app.document.is_none());
+        assert!(!app.rebinds_modified);
+        assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn saving_at_the_question_saves_and_goes_on() {
+        let (mut app, dir, rebind) = app_with_rebinds("close-save");
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        app.unless_unsaved(AfterPrompt::CloseFile);
+        answer(&mut app, true);
+        assert!(app.document.is_none());
+        assert!(std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
+        // No other message box gets in the way.
+        assert!(app.dialogs.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn without_changes_files_close_and_open_right_away() {
+        let (mut app, dir, rebind) = app_with_rebinds("no-prompt");
+        app.unless_unsaved(AfterPrompt::OpenRebind(rebind));
+        assert!(app.dialogs.is_empty());
+        app.unless_unsaved(AfterPrompt::CloseFile);
+        assert!(app.dialogs.is_empty());
+        assert!(app.document.is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn opening_another_rebind_file_asks_and_then_opens_it() {
+        let (mut app, dir, rebind) = app_with_rebinds("open-rebind-prompt");
+        let other = dir.join("other.xml");
+        std::fs::write(&other, r#"<ActionMaps><actionmap name="m"><action name="b"><rebind input="kb1_o"/></action></actionmap></ActionMaps>"#)
+            .unwrap();
+        edit(&mut app, 0, "keyboard", "kb1_y");
+
+        app.unless_unsaved(AfterPrompt::OpenRebind(other.clone()));
+        assert_eq!(asked(&app), Some(AfterPrompt::OpenRebind(other.clone())));
+        let dialog = &app.dialogs[0];
+        assert!(dialog.message.ends_with("Save them before opening the other file?"), "{}", dialog.message);
+        assert_eq!(dialog.extra.as_ref().map(|(label, _)| *label), Some("Open Without Saving"));
+        // Still the old file, until answered.
+        assert_eq!(app.document.as_ref().unwrap().rebind_path.as_ref(), Some(&rebind));
+
+        answer(&mut app, true);
+        assert!(std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
+        assert_eq!(app.document.as_ref().unwrap().rebind_path.as_ref(), Some(&other));
+        assert!(!app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn opening_another_profile_asks_and_then_opens_it() {
+        let (mut app, dir, rebind) = app_with_rebinds("open-profile-prompt");
+        let other = dir.join("other_profile.xml");
+        std::fs::write(&other, r#"<p><actionmap name="n"><action name="c"/></actionmap></p>"#).unwrap();
+        edit(&mut app, 0, "keyboard", "kb1_y");
+
+        app.unless_unsaved(AfterPrompt::OpenProfile(other.clone()));
+        assert_eq!(asked(&app), Some(AfterPrompt::OpenProfile(other.clone())));
+        answer(&mut app, false);
+        let doc = app.document.as_ref().unwrap();
+        assert_eq!(doc.path, other);
+        assert!(doc.rebind_root.is_none());
+        assert!(!app.rebinds_modified);
+        assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_file_that_does_not_open_keeps_the_changes() {
+        let (mut app, dir, rebind) = app_with_rebinds("failed-open");
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        let missing = dir.join("missing.xml");
+
+        for after in [AfterPrompt::OpenRebind(missing.clone()), AfterPrompt::OpenProfile(missing.clone())] {
+            app.unless_unsaved(after);
+            answer(&mut app, false);
+            let doc = app.document.as_ref().unwrap();
+            assert_eq!(doc.rebind_path.as_ref(), Some(&rebind));
+            assert!(doc.rebinds.values().flatten().any(|input| input == "kb1_y"));
+            // So the next exit still asks.
+            assert!(app.rebinds_modified);
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_blank_layouts_open_button_asks_too() {
+        let (mut app, dir, _) = app_with_rebinds("created-open");
+        let created = dir.join("created.xml");
+        std::fs::write(&created, "<ActionMaps/>").unwrap();
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        app.run_dialog_action(DialogAction::OpenRebindFile(created.clone()));
+        assert_eq!(asked(&app), Some(AfterPrompt::OpenRebind(created)));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -2668,8 +2854,10 @@ mod tests {
         app.write_rebind_file(&dir);
         assert!(app.rebinds_modified);
         app.document.as_mut().unwrap().rebind_path = Some(dir.clone());
-        app.save_and_exit();
+        app.save_then(AfterPrompt::CloseFile);
         assert!(app.rebinds_modified);
+        // It didn't go on.
+        assert!(app.document.is_some());
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -2683,14 +2871,14 @@ mod tests {
         assert_eq!(dialog.extra.as_ref().map(|(label, _)| *label), Some("Exit Without Saving"));
 
         // Without saving: the file stays as it was, and the next close request goes through.
-        app.run_dialog_action(super::DialogAction::ExitWithoutSaving);
+        app.run_dialog_action(DialogAction::DiscardThen(AfterPrompt::Exit));
         assert!(!app.rebinds_modified);
         assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
 
         // Saving: the file has the change, and no other message box gets in the way of exiting.
         app.dialogs.clear();
         edit(&mut app, 0, "keyboard", "kb1_z");
-        app.run_dialog_action(super::DialogAction::SaveAndExit);
+        app.run_dialog_action(DialogAction::SaveThen(AfterPrompt::Exit));
         assert!(!app.rebinds_modified);
         assert!(std::fs::read_to_string(&rebind).unwrap().contains("kb1_z"));
         assert!(app.dialogs.is_empty());
@@ -2700,9 +2888,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_exit_question_warns_about_the_games_own_file() {
-        let own = super::unsaved_rebinds_warning(Path::new(r"C:\SC\LIVE\USER\Client\0\Profiles\default\actionmaps.xml"));
+        let own =
+            super::unsaved_rebinds_warning(Path::new(r"C:\SC\LIVE\USER\Client\0\Profiles\default\actionmaps.xml"), AfterPrompt::Exit);
         assert!(own.message.contains("overwritten by the game engine"));
-        let other = super::unsaved_rebinds_warning(Path::new(r"C:\SC\mappings\layout.xml"));
+        let other = super::unsaved_rebinds_warning(Path::new(r"C:\SC\mappings\layout.xml"), AfterPrompt::CloseFile);
         assert!(!other.message.contains("overwritten"));
         assert!(other.message.contains("layout.xml"));
     }
