@@ -240,6 +240,8 @@ pub struct CtrlXrefApp {
     /// Message boxes, shown one at a time, oldest first.
     dialogs: Vec<Dialog>,
     search: SearchDialog,
+    /// Tree ids of what Mark All marked; the table has its rows' marks itself.
+    marked: HashSet<String>,
 }
 
 impl CtrlXrefApp {
@@ -276,6 +278,7 @@ impl CtrlXrefApp {
             toasts: Vec::new(),
             dialogs: Vec::new(),
             search: SearchDialog::new(),
+            marked: HashSet::new(),
         }
     }
 
@@ -545,23 +548,56 @@ impl CtrlXrefApp {
         if let Err(err) = self.search.remember() {
             self.notify(Level::Error, format!("{err:#}"));
         }
+        // The marks stay, so the search can step through them.
+        self.table.clear_cell_selection();
         match place.row {
             Some(row) => {
-                self.table.clear_selection();
                 self.selected = Some(place.id.clone());
                 self.scroll_table_to = Some(row);
             }
-            None => self.select_in_tree(place.id.clone()),
+            None => self.move_in_tree(place.id.clone()),
         }
         self.reveal_in_tree = true;
+    }
+
+    /// Marks every place with matches, in the table and the tree, in place of earlier marks. A
+    /// search that finds something joins the previous ones.
+    fn mark_all(&mut self) {
+        if self.search.regex().is_none() {
+            return;
+        }
+        let places = self.search_places();
+        self.search.set_counts(&places);
+        let with_matches: Vec<&Place> = places.iter().filter(|place| place.occurrences > 0).collect();
+        if !with_matches.is_empty()
+            && let Err(err) = self.search.remember()
+        {
+            self.notify(Level::Error, format!("{err:#}"));
+        }
+        let rows = with_matches.iter().filter_map(|place| self.table.source_of(place.row?)).collect();
+        self.table.set_marks(rows);
+        self.marked = with_matches.iter().map(|place| place.id.clone()).collect();
+        self.search.set_marked(self.marked.len());
+    }
+
+    /// Clears the marks of the tree, which go with the table's.
+    fn clear_tree_marks(&mut self) {
+        self.marked.clear();
+        self.search.set_marked(0);
     }
 
     /// Draws the Search dialog and does what was asked in it.
     fn search_dialog(&mut self, ctx: &Context) {
         match self.search.show(ctx) {
-            Some(SearchAction::Changed) => self.update_search_counts(),
+            Some(SearchAction::Changed) => {
+                // Marks belong to the search that made them.
+                self.table.clear_marks();
+                self.clear_tree_marks();
+                self.update_search_counts();
+            }
             Some(SearchAction::FindNext) => self.find(true),
             Some(SearchAction::FindPrevious) => self.find(false),
+            Some(SearchAction::MarkAll) => self.mark_all(),
             None => {}
         }
     }
@@ -578,9 +614,15 @@ impl CtrlXrefApp {
         self.table.row_of(source_ix)
     }
 
-    /// Tree selection changed to `id`: scroll the table to the action's row, or for an
-    /// actionmap to its first row in the current sort order.
+    /// Tree selection changed to `id`: move there, clearing the selected cells and the marks.
     fn select_in_tree(&mut self, id: String) {
+        self.move_in_tree(id);
+        self.table.clear_selection();
+    }
+
+    /// Selects `id` and scrolls the table to the action's row, or for an actionmap to its first
+    /// row in the current sort order.
+    fn move_in_tree(&mut self, id: String) {
         let Some(doc) = &self.document else {
             return;
         };
@@ -597,7 +639,6 @@ impl CtrlXrefApp {
         };
         self.selected = Some(id);
         self.scroll_table_to = first_row;
-        self.table.clear_selection();
     }
 
     /// Table selection moved to displayed `row_ix`: select and reveal its action in the tree.
@@ -1267,6 +1308,8 @@ impl CtrlXrefApp {
         };
         let reveal = std::mem::take(&mut self.reveal_in_tree);
         let mut clicked = None;
+        let marked_fill = attribute_table::marked_color(ui);
+        let mark = |text: RichText, marked: bool| if marked { text.background_color(marked_fill) } else { text };
         ScrollArea::both().auto_shrink(false).show(ui, |ui| {
             for map in &doc.tree {
                 let id = ui.make_persistent_id(&map.id);
@@ -1278,10 +1321,13 @@ impl CtrlXrefApp {
                 if reveal && holds_selection {
                     state.set_open(true);
                 }
+                // Also for its actions' matches, which a collapsed actionmap hides.
+                let map_marked = self.marked.contains(&map.id)
+                    || (!self.marked.is_empty() && map.children.iter().any(|action| self.marked.contains(&action.id)));
                 state
                     .show_header(ui, |ui| {
                         let response = ui
-                            .selectable_label(self.selected.as_deref() == Some(&map.id), map.text())
+                            .selectable_label(self.selected.as_deref() == Some(&map.id), mark(map.text(), map_marked))
                             .on_hover_text(map.name.as_str());
                         if response.clicked() {
                             clicked = Some(map.id.clone());
@@ -1293,8 +1339,8 @@ impl CtrlXrefApp {
                     .body(|ui| {
                         for action in &map.children {
                             let is_selected = self.selected.as_deref() == Some(&action.id);
-                            let response =
-                                ui.selectable_label(is_selected, action.text()).on_hover_text(action.name.as_str());
+                            let text = mark(action.text(), self.marked.contains(&action.id));
+                            let response = ui.selectable_label(is_selected, text).on_hover_text(action.name.as_str());
                             if response.clicked() {
                                 clicked = Some(action.id.clone());
                             }
@@ -1323,6 +1369,9 @@ impl CtrlXrefApp {
         }
         let scroll_to = self.scroll_table_to.take();
         let out = self.table.show(ui, selected, scroll_to);
+        if self.table.take_marks_cleared() {
+            self.clear_tree_marks();
+        }
         if let Some(row_ix) = out.clicked_row {
             self.select_in_table(row_ix);
         }

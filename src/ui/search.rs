@@ -23,6 +23,7 @@ pub enum SearchAction {
     Changed,
     FindNext,
     FindPrevious,
+    MarkAll,
 }
 
 /// How the search text turned out.
@@ -49,6 +50,8 @@ pub struct SearchDialog {
     active: bool,
     /// Where the dialog was last drawn, to tell where clicks land.
     rect: Option<egui::Rect>,
+    /// How many places Mark All has marked.
+    marked: usize,
 }
 
 impl SearchDialog {
@@ -63,7 +66,13 @@ impl SearchDialog {
             found: None,
             active: false,
             rect: None,
+            marked: 0,
         }
+    }
+
+    /// Notes how many places are marked, for the status bar.
+    pub fn set_marked(&mut self, marked: usize) {
+        self.marked = marked;
     }
 
     /// Opens the dialog, with the keyboard in its text field when `focus`. The first time, it
@@ -206,6 +215,9 @@ impl SearchDialog {
                     if ui.add_enabled(can_search, egui::Button::new("Find Previous")).clicked() {
                         action = Some(SearchAction::FindPrevious);
                     }
+                    if ui.add_enabled(can_search, egui::Button::new("Mark All")).clicked() {
+                        action = Some(SearchAction::MarkAll);
+                    }
                 });
                 if let Pattern::Invalid(error) = &self.pattern {
                     ui.add_space(4.);
@@ -286,6 +298,9 @@ impl SearchDialog {
                 text.push_str(" (wrapped around)");
             }
         }
+        if self.marked > 0 {
+            text.push_str(&format!("  -  {} marked", self.marked));
+        }
         text
     }
 }
@@ -331,6 +346,13 @@ mod tests {
             with("a", (12, 8), Some(found)).count_text(),
             "\"a\": 12 occurrences in 8 places  -  at 1 of 8 (wrapped around)"
         );
+    }
+
+    #[test]
+    fn the_status_counts_what_is_marked() {
+        let mut dialog = with("a", (12, 8), None);
+        dialog.set_marked(8);
+        assert_eq!(dialog.count_text(), "\"a\": 12 occurrences in 8 places  -  8 marked");
     }
 
     #[test]

@@ -59,6 +59,11 @@ pub fn profile_color(ui: &Ui) -> Color32 {
     if ui.visuals().dark_mode { PROFILE_FG_DARK } else { PROFILE_FG_LIGHT }
 }
 
+/// The background of what a search marked: softer than the selection, which stays visible on it.
+pub fn marked_color(ui: &Ui) -> Color32 {
+    ui.visuals().selection.bg_fill.gamma_multiply(MARKED_STRENGTH)
+}
+
 /// A column: its key (the cell name in [`TableRow::cells`]), header text and initial width.
 #[derive(Clone)]
 struct Column {
@@ -108,6 +113,9 @@ struct Editing {
     /// Set until the editor has taken the keyboard focus.
     focus: bool,
 }
+
+/// How much of the selection color marks what a search marked.
+const MARKED_STRENGTH: f32 = 0.45;
 
 /// The item of a cell's context menu that does the same as Ctrl+C.
 const COPY_MENU_ITEM: &str = "Copy to clipboard";
@@ -179,6 +187,10 @@ pub struct AttributeTable {
     selection: Option<CellSelection>,
     /// Whether the mouse is dragging `selection`'s focus.
     dragging: bool,
+    /// Source indices of the rows marked by a search. By source, so they stay through a sort.
+    marked: HashSet<usize>,
+    /// Whether the marks were cleared since the owner last asked.
+    marks_cleared: bool,
 }
 
 impl AttributeTable {
@@ -194,13 +206,39 @@ impl AttributeTable {
             edits: Vec::new(),
             selection: None,
             dragging: false,
+            marked: HashSet::new(),
+            marks_cleared: false,
         }
     }
 
-    /// Clears the selected cells, leaving only the selected row.
+    /// Clears the selected cells and the marked rows, leaving only the selected row.
     pub fn clear_selection(&mut self) {
+        self.clear_cell_selection();
+        self.clear_marks();
+    }
+
+    /// Clears the selected cells, keeping the marked rows.
+    pub fn clear_cell_selection(&mut self) {
         self.selection = None;
         self.dragging = false;
+    }
+
+    /// Clears the marked rows.
+    pub fn clear_marks(&mut self) {
+        self.marked.clear();
+        self.marks_cleared = true;
+    }
+
+    /// Marks the rows with these source indices, in place of any selected cells and earlier marks.
+    pub fn set_marks(&mut self, rows: HashSet<usize>) {
+        self.clear_cell_selection();
+        self.marked = rows;
+        self.marks_cleared = false;
+    }
+
+    /// Whether the marks were cleared since the last call, for an owner that marks more with them.
+    pub fn take_marks_cleared(&mut self) -> bool {
+        std::mem::take(&mut self.marks_cleared)
     }
 
     /// Ctrl+A selects all cells, and Ctrl+C copies the selected cells or else displayed row
@@ -229,18 +267,23 @@ impl AttributeTable {
         if self.rows.is_empty() {
             return;
         }
+        self.clear_selection();
         self.selection = Some(CellSelection {
             anchor: (0, 0),
             focus: (self.rows.len() - 1, self.columns.len() - 1),
             all: true,
         });
-        self.dragging = false;
         clear_label_selection(ctx);
     }
 
-    /// The selected cells, or else displayed row `selected`, as tab-separated text in the
-    /// displayed order. Only Select All has the column headers as its first line.
+    /// The selected cells, or else the marked rows, or else displayed row `selected`, as
+    /// tab-separated text in the displayed order. Only Select All has the column headers as its
+    /// first line.
     fn selection_text(&self, selected: Option<usize>) -> Option<String> {
+        if self.selection.is_none() && !self.marked.is_empty() {
+            let marked = self.rows.iter().filter(|row| self.marked.contains(&row.source_ix));
+            return Some(ctrlxref::csv::to_tsv(marked.map(|row| row.cells.as_slice())));
+        }
         let (rows, columns, all) = match self.selection {
             Some(selection) => (selection.rows(), selection.columns(), selection.all),
             None => {
@@ -398,7 +441,7 @@ impl AttributeTable {
             self.sort = None;
         }
         self.apply_sort();
-        // The rows the editor and the selection were on are gone.
+        // The rows the editor, the selection and the marks were on are gone.
         self.editing = None;
         self.clear_selection();
     }
@@ -462,8 +505,8 @@ impl AttributeTable {
     fn set_sort(&mut self, col_ix: usize, sort: ColumnSort) {
         self.sort = Some((col_ix, sort));
         self.apply_sort();
-        // The selected rows moved.
-        self.clear_selection();
+        // The selected rows moved; marks go with their rows.
+        self.clear_cell_selection();
     }
 
     /// Draws the table filling `ui`, with displayed row `selected` highlighted and, when
@@ -575,6 +618,7 @@ impl AttributeTable {
                                 if response.drag_started_by(egui::PointerButton::Primary) {
                                     // The tree stays on the row where the drag started.
                                     out.clicked_row = Some(row_ix);
+                                    self.clear_selection();
                                     self.selection = Some(CellSelection {
                                         anchor: (row_ix, col_ix),
                                         focus: (row_ix, col_ix),
@@ -586,10 +630,12 @@ impl AttributeTable {
                                 if response.double_clicked() {
                                     self.start_edit(row_ix, col_ix);
                                 }
-                                // A right-click inside the selected cells keeps them, so the
-                                // menu copies them; elsewhere it selects the row, like a click.
+                                // A right-click inside the selected cells or the marked rows keeps
+                                // them, so the menu copies them; elsewhere it selects the row, like
+                                // a click.
                                 if response.secondary_clicked()
                                     && !self.selection.is_some_and(|selection| selection.contains(row_ix, col_ix))
+                                    && !self.is_marked(row_ix)
                                 {
                                     out.clicked_row = Some(row_ix);
                                     self.clear_selection();
@@ -624,6 +670,11 @@ impl AttributeTable {
         out
     }
 
+    /// Whether the row displayed at `row_ix` is marked, while no cells are selected.
+    fn is_marked(&self, row_ix: usize) -> bool {
+        self.selection.is_none() && self.rows.get(row_ix).is_some_and(|row| self.marked.contains(&row.source_ix))
+    }
+
     /// Draws one cell: its editor while it is being edited, else its text in its [`CellStyle`].
     fn cell_ui(&mut self, ui: &mut Ui, row_ix: usize, col_ix: usize) {
         if ui.visuals().dark_mode {
@@ -651,6 +702,9 @@ impl AttributeTable {
         if cell_selected {
             let rect = ui.max_rect().expand2(ui.spacing().item_spacing * 0.5);
             ui.painter().rect_filled(rect, 0., ui.visuals().selection.bg_fill);
+        } else if self.is_marked(row_ix) {
+            let rect = ui.max_rect().expand2(ui.spacing().item_spacing * 0.5);
+            ui.painter().rect_filled(rect, 0., marked_color(ui));
         }
         let style = self.rows[row_ix].styles[col_ix].filter(|style| !(cell_selected && *style == CellStyle::Conflict));
         let rich = match style {
@@ -1149,6 +1203,78 @@ mod tests {
             headless.frame(&mut table, Vec::new(), None);
         }
         assert_eq!(table.selection.unwrap().focus, (0, 0));
+    }
+
+    #[test]
+    fn marks_copy_their_rows_in_the_displayed_order_and_stay_through_a_sort() {
+        let mut table = table_of(&["a", "b"], 4);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        table.set_marks(HashSet::from([0, 2]));
+        assert!(!table.take_marks_cleared());
+
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], Some(3));
+        assert_eq!(copied.as_deref(), Some("a0\tb0\na2\tb2"));
+
+        table.set_sort(0, ColumnSort::Descending);
+        assert!(table.is_marked(1) && table.is_marked(3));
+        assert!(!table.is_marked(0) && !table.is_marked(2));
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], None);
+        assert_eq!(copied.as_deref(), Some("a2\tb2\na0\tb0"));
+        assert!(!table.take_marks_cleared());
+    }
+
+    #[test]
+    fn finding_keeps_the_marks_and_clicking_clears_them() {
+        let mut table = table_of(&["a"], 4);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        table.set_marks(HashSet::from([0]));
+
+        // What Find Next does to the table.
+        table.clear_cell_selection();
+        assert!(table.is_marked(0));
+        assert!(!table.take_marks_cleared());
+
+        let pos = headless.cell(2, 0);
+        headless.frame(&mut table, vec![egui::Event::PointerMoved(pos)], None);
+        headless.frame(&mut table, vec![Headless::press(pos, true)], None);
+        headless.frame(&mut table, vec![Headless::press(pos, false)], None);
+        assert!(!table.is_marked(0));
+        assert!(table.take_marks_cleared());
+        assert!(!table.take_marks_cleared());
+    }
+
+    #[test]
+    fn dragging_and_select_all_replace_the_marks() {
+        let mut table = table_of(&["a", "b"], 4);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        table.set_marks(HashSet::from([3]));
+        headless.ctrl_a(&mut table);
+        assert!(table.marked.is_empty());
+        assert!(table.take_marks_cleared());
+
+        table.clear_selection();
+        table.set_marks(HashSet::from([3]));
+        let (from, to) = (headless.cell(0, 0), headless.cell(1, 1));
+        headless.drag(&mut table, from, to, 2);
+        headless.release(&mut table, to);
+        assert!(table.marked.is_empty());
+        let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], None);
+        assert_eq!(copied.as_deref(), Some("a0\tb0\na1\tb1"));
+    }
+
+    #[test]
+    fn a_right_click_on_a_marked_row_keeps_the_marks() {
+        let mut table = table_of(&["a"], 4);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        table.set_marks(HashSet::from([1, 2]));
+
+        let inside = headless.cell(1, 0);
+        assert_eq!(right_click(&mut headless, &mut table, inside, None), None);
+        assert_eq!(click_menu_item(&mut headless, &mut table, inside, 0, None).as_deref(), Some("a1\na2"));
+
+        let outside = headless.cell(3, 0);
+        assert_eq!(right_click(&mut headless, &mut table, outside, None), Some(3));
+        assert!(table.marked.is_empty());
     }
 
     #[test]

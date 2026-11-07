@@ -102,6 +102,11 @@ doesn't paste. Handlers for this usually split on tabs and line breaks, which fi
 - **F3** or **Find Next**, or **Enter** in the text field, goes to the next match. **Shift+F3**
   or **Find Previous**, or **Shift+Enter**, goes to the previous one. **F3** and **Shift+F3**
   also open the dialog when it is closed.
+- **Mark All** highlights everything with a match, in the table and the tree. An actionmap is
+  also highlighted when it holds a match, so collapsed ones show it. **F3** and **Shift+F3** step
+  through the matches with the marks in place, and the marks stay when you sort. **Ctrl+C** and
+  **Copy to clipboard** copy the marked rows. Clicking in the table or the tree, the arrow keys,
+  dragging, **Ctrl+A** or changing the search text clears them.
 - The text is a regular expression, such as `kb1_(lalt|ralt)\+` or `^v_eject`. Case is ignored;
   put `(?-i)` first to respect it.
 - A search looks through all columns of the table, in the order shown, and then the names of
