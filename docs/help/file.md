@@ -110,8 +110,8 @@ doesn't paste. Handlers for this usually split on tabs and line breaks, which fi
 - The status bar shows the number of occurrences, how many places have them, and which of them
   you are at. A highlighted warning tells when nothing matches or the text is not a valid
   regular expression.
-- The button next to the text field lists your previous searches, latest first. They are saved
-  under `HKEY_CURRENT_USER\Software\ctrlXref` in the Windows registry.
+- The button next to the text field lists your last 20 searches that found something, latest
+  first. They are saved under `HKEY_CURRENT_USER\Software\ctrlXref` in the Windows registry.
 - The dialog turns partly transparent when you click elsewhere in the window, so you can tell
   what is under it. **F3** and **Shift+F3** leave it that way. Clicking the dialog or pressing
   **Ctrl+F** makes it solid again.

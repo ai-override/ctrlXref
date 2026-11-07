@@ -529,13 +529,11 @@ impl CtrlXrefApp {
     }
 
     /// Moves to the next or the previous match, going around the ends of the table and the
-    /// tree, and adds the search to the previous ones. The status bar tells how it went.
+    /// tree. A search that finds something joins the previous ones. The status bar tells how
+    /// it went.
     fn find(&mut self, forward: bool) {
         if self.search.regex().is_none() {
             return;
-        }
-        if let Err(err) = self.search.remember() {
-            self.notify(Level::Error, format!("{err:#}"));
         }
         let places = self.search_places();
         self.search.set_counts(&places);
@@ -544,6 +542,9 @@ impl CtrlXrefApp {
         let Some(place) = found.map(|found| &places[found.place]) else {
             return;
         };
+        if let Err(err) = self.search.remember() {
+            self.notify(Level::Error, format!("{err:#}"));
+        }
         match place.row {
             Some(row) => {
                 self.table.clear_selection();

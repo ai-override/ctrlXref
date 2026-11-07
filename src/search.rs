@@ -5,7 +5,7 @@ use anyhow::Result;
 use regex::{Regex, RegexBuilder};
 
 /// How many previous searches are kept.
-pub const MAX_HISTORY: usize = 25;
+pub const MAX_HISTORY: usize = 20;
 
 /// `pattern` as a regular expression, ignoring case unless it says otherwise with `(?-i)`.
 pub fn compile(pattern: &str) -> Result<Regex, regex::Error> {
@@ -79,10 +79,12 @@ pub fn load_history() -> Vec<String> {
     use winreg::RegKey;
     use winreg::enums::HKEY_CURRENT_USER;
 
-    RegKey::predef(HKEY_CURRENT_USER)
+    let mut history: Vec<String> = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey(REG_KEY)
         .and_then(|key| key.get_value(REG_VALUE))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    history.truncate(MAX_HISTORY);
+    history
 }
 
 /// Saves `history` under `HKEY_CURRENT_USER\Software\ctrlXref` for [`load_history`].
@@ -187,7 +189,7 @@ mod tests {
         for ix in 0..MAX_HISTORY {
             remember(&mut history, &ix.to_string());
         }
-        assert_eq!(history.len(), MAX_HISTORY);
+        assert_eq!(history.len(), 20);
         assert_eq!(history[0], (MAX_HISTORY - 1).to_string());
     }
 }
