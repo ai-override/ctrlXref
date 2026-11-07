@@ -50,6 +50,11 @@ const CONFLICT_BG: Color32 = Color32::from_rgb(0x4a, 0x08, 0x08);
 const PROFILE_FG_DARK: Color32 = theme::ACCENT;
 const PROFILE_FG_LIGHT: Color32 = Color32::from_rgb(0x1f, 0x6f, 0xd1);
 
+/// The text color of profile bindings in the current theme.
+pub fn profile_color(ui: &Ui) -> Color32 {
+    if ui.visuals().dark_mode { PROFILE_FG_DARK } else { PROFILE_FG_LIGHT }
+}
+
 /// A column: its key (the cell name in [`TableRow::cells`]), header text and initial width.
 #[derive(Clone)]
 struct Column {
@@ -470,8 +475,7 @@ impl AttributeTable {
                 RichText::new(text).color(Color32::WHITE)
             }
             Some(CellStyle::Profile) => {
-                let color = if ui.visuals().dark_mode { PROFILE_FG_DARK } else { PROFILE_FG_LIGHT };
-                RichText::new(text).color(color).family(FontFamily::Name(super::BOLD.into()))
+                RichText::new(text).color(profile_color(ui)).family(FontFamily::Name(super::BOLD.into()))
             }
             None => RichText::new(text),
         };

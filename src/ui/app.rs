@@ -20,7 +20,7 @@ use eframe::egui::{
 use egui_commonmark::CommonMarkCache;
 use xmltree::{Element, XMLNode};
 
-use super::attribute_table::{AttributeTable, CellEdit, CellStyle, TableRow};
+use super::attribute_table::{self, AttributeTable, CellEdit, CellStyle, TableRow};
 use super::help::{self, HelpTopic};
 use super::menus::{self, Command, ThemeChoice};
 use super::theme;
@@ -158,12 +158,23 @@ struct Dialog {
     list: Vec<String>,
     confirm: Option<(&'static str, &'static str, DialogAction)>,
     extra: Option<(&'static str, DialogAction)>,
+    /// A phrase drawn like the Default column's bindings wherever it occurs in `message`.
+    highlight: Option<&'static str>,
     width: f32,
 }
 
 impl Dialog {
     fn warning(title: &str, message: String) -> Self {
-        Self { title: title.into(), message, warning: true, list: Vec::new(), confirm: None, extra: None, width: 480. }
+        Self {
+            title: title.into(),
+            message,
+            warning: true,
+            list: Vec::new(),
+            confirm: None,
+            extra: None,
+            highlight: None,
+            width: 480.,
+        }
     }
 
     /// Tells that the file at `path` was saved, offering to show it in File Explorer.
@@ -176,6 +187,7 @@ impl Dialog {
             list: Vec::new(),
             confirm: Some(("Open in Explorer", "Close", show)),
             extra: None,
+            highlight: None,
             width: 480.,
         }
     }
@@ -1070,6 +1082,7 @@ impl CtrlXrefApp {
             list: list.lines().map(str::to_string).collect(),
             confirm: Some(("Copy", "Close", DialogAction::Copy(copy))),
             extra: None,
+            highlight: None,
             width: 760.,
         });
     }
@@ -1105,6 +1118,7 @@ impl CtrlXrefApp {
             list: Vec::new(),
             confirm: None,
             extra: None,
+            highlight: Some("Star Citizen"),
             width: 560.,
         });
     }
@@ -1271,7 +1285,10 @@ impl CtrlXrefApp {
                 ui.heading(&dialog.title);
             });
             ui.add_space(8.);
-            ui.label(&dialog.message);
+            match dialog.highlight {
+                Some(phrase) => ui.label(highlighted(ui, &dialog.message, phrase)),
+                None => ui.label(&dialog.message),
+            };
             if !dialog.list.is_empty() {
                 ui.add_space(8.);
                 ScrollArea::vertical().max_height(420.).auto_shrink([false, true]).show(ui, |ui| {
@@ -1493,6 +1510,22 @@ fn show_in_explorer(_path: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn select_argument(path: &Path) -> String {
     format!("/select,\"{}\"", path.display())
+}
+
+/// `message` as body text with every `phrase` in it drawn like the Default column's bindings.
+fn highlighted(ui: &egui::Ui, message: &str, phrase: &str) -> egui::text::LayoutJob {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let bold = egui::FontId::new(font.size, egui::FontFamily::Name(super::BOLD.into()));
+    let plain = egui::TextFormat::simple(font, ui.visuals().text_color());
+    let accent = egui::TextFormat::simple(bold, attribute_table::profile_color(ui));
+    let mut job = egui::text::LayoutJob::default();
+    for (ix, part) in message.split(phrase).enumerate() {
+        if ix > 0 {
+            job.append(phrase, 0.0, accent.clone());
+        }
+        job.append(part, 0.0, plain.clone());
+    }
+    job
 }
 
 fn panel_header(ui: &mut egui::Ui, title: String) {
@@ -2250,6 +2283,57 @@ mod tests {
                 PathBuf::from(r"E:\StarCitizen\Data\Localization\english\global.ini"),
             ]
         );
+    }
+
+    /// Runs `show` in a headless frame `width` wide, with the app's fonts.
+    fn in_frame(width: f32, mut show: impl FnMut(&mut eframe::egui::Ui)) {
+        use eframe::egui;
+        let ctx = egui::Context::default();
+        crate::ui::setup_fonts(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.));
+        let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+        ctx.run_ui(input, |ui| show(ui)).textures_delta.clear();
+    }
+
+    #[test]
+    fn highlighted_phrase_is_bold_and_colored_like_the_default_column() {
+        use eframe::egui;
+        in_frame(800., |ui| {
+            let job = super::highlighted(ui, "The Star Citizen game, Star Citizen.", "Star Citizen");
+            assert_eq!(job.text, "The Star Citizen game, Star Citizen.");
+            let accent = super::attribute_table::profile_color(ui);
+            let parts: Vec<(&str, bool, bool)> = job
+                .sections
+                .iter()
+                .map(|section| {
+                    let bold = section.format.font_id.family == egui::FontFamily::Name(crate::ui::BOLD.into());
+                    let range = section.byte_range.start.0..section.byte_range.end.0;
+                    (&job.text[range], bold, section.format.color == accent)
+                })
+                .collect();
+            assert_eq!(
+                parts,
+                [
+                    ("The ", false, false),
+                    ("Star Citizen", true, true),
+                    (" game, ", false, false),
+                    ("Star Citizen", true, true),
+                    (".", false, false),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn highlighted_text_wraps_to_the_available_width() {
+        in_frame(300., |ui| {
+            let message = "A long message about the Star Citizen game. ".repeat(10);
+            let width = ui.available_width();
+            let response = ui.label(super::highlighted(ui, &message, "Star Citizen"));
+            assert!(response.rect.width() <= width + 1., "{} wider than {width}", response.rect.width());
+            let row = ui.text_style_height(&eframe::egui::TextStyle::Body);
+            assert!(response.rect.height() > row * 3., "{} is not wrapped", response.rect.height());
+        });
     }
 
     const PROFILE: &str = r#"<profile>
