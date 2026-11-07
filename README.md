@@ -145,6 +145,12 @@ cargo test      # Run the tests
 
 `version.txt` holds the application version. `build.rs` raises its patch number on the first build of each day with source changes, so the file regularly shows as modified.
 
+### Donations
+If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive Coffee consumption: [classloader](https://paypal.me/SCclassloader?target=_blank)
+
+### Discord
+My Discord: [primordial](https://discord.com/users/primordial_23184)
+
 ## License
 
 ctrlXref is released under the [MIT License](LICENSE). You are free to use, copy, modify, merge, publish, distribute, sublicense and sell copies of the software, as long as the copyright notice and license text are included in all copies or substantial portions of it. The software is provided "as is", without warranty of any kind. See the [`LICENSE`](LICENSE) file for the full terms.
