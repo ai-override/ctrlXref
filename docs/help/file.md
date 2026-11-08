@@ -43,6 +43,18 @@ Picks any rebind file to open, for example a mappings file you exported from the
 file browser starts in the game's mappings folder,
 `<game folder>\LIVE\user\client\0\controls\mappings`, when it exists.
 
+## Merge Rebind File...
+
+Adds the bindings of another rebind file to the open one, instead of replacing it. It is
+available once a rebind file is open, and no longer after opening a fresh **defaultProfile**.
+
+- Every binding is added after the ones the action already has, also when they conflict, so that
+  you can pick what to keep. A binding the action already has is not added twice.
+- A device with several bindings is shown in red. Edit the cell and delete the ones you don't want.
+- Nothing is written until you save. After a merge **Save Rebind File** is disabled, so that the
+  file you opened isn't overwritten by mistake: use **Save Rebind Copy As...** to choose where the
+  merged bindings go. **Ctrl+Z** takes the merged bindings out and enables it again.
+
 ## Editing bindings in the table
 
 With a rebind file open, double-click an empty **keyboard**, **mouse**, **joystick** or
@@ -50,6 +62,9 @@ With a rebind file open, double-click an empty **keyboard**, **mouse**, **joysti
 elsewhere to keep the change, or **Escape** to cancel it. The other columns come from the
 profile and can't be edited.
 
+- While editing, clicking a binding selects it, ready to be deleted or typed over. In a cell with
+  several bindings, the click selects the one under the pointer with its ` | `, so that one ` | `
+  stays between the bindings that remain. Dragging selects text as usual.
 - Separate several bindings with commas or vertical bars: `up, numpad8` or
   `up | numpad8`. Each one becomes a `<rebind input="..."/>` element of its own. Cells
   with several bindings show them separated by ` | `.
@@ -186,6 +201,7 @@ When the open rebind file has changes that are not saved, closing it first asks 
 **Save** saves them and goes on, **Close Without Saving** leaves the file as it was, and
 **Cancel** goes back. Opening another profile or rebind file asks the same, after you have picked
 the file, with **Open Without Saving**. If the other file can't be opened, your changes stay.
+After a **Merge Rebind File**, **Save** is replaced by **Save As...**, which asks where to save.
 
 ## Theme
 
@@ -198,7 +214,8 @@ The sun / moon button at the right end of the title bar switches between light a
 ## Exit (Ctrl+Q)
 
 When the open rebind file has changes that are not saved, exiting first asks what to do, however
-you exit: **Save** saves them and exits, **Exit Without Saving** leaves the file as it was, and
-**Cancel** goes back to the application.
+you exit: **Save As...** asks where to save them and exits, **Exit Without Saving** leaves the file
+as it was, and **Cancel** goes back to the application. Cancelling the **Save As** box also goes
+back, with your changes kept.
 
 Without such changes, it closes ctrlXref right away.

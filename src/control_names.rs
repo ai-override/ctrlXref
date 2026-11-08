@@ -2,7 +2,9 @@
 
 use xmltree::Element;
 
+use crate::keys;
 use crate::localization::Strings;
+use crate::rebinds;
 use crate::xml_doc;
 
 /// One `<Key>` of the file, with its `@key` references resolved.
@@ -13,6 +15,27 @@ pub struct ControlName {
     pub short: String,
     /// The name of its `<device>`, with `joystick` for any of the numbered joysticks.
     pub device: String,
+}
+
+impl ControlName {
+    /// An example of this control as a rebind input, as the actions table's device columns show
+    /// it. A keyboard modifier is shown with a key, and the mouse names of the keyboard's list
+    /// with a modifier, as the game only combines those. Empty for a device without a prefix.
+    pub fn example(&self) -> String {
+        let name = self.name.as_str();
+        let device = if self.device == "control_pad" { "gamepad" } else { self.device.as_str() };
+        let prefix = rebinds::device_prefix(device);
+        if prefix.is_empty() || name.is_empty() {
+            return String::new();
+        }
+        if device == "keyboard" && keys::MODIFIERS.contains(&name) {
+            format!("{prefix}{name}+o")
+        } else if device == "keyboard" && ["mouse", "maxis", "mwheel"].iter().any(|start| name.starts_with(start)) {
+            format!("{prefix}lctrl+{name}")
+        } else {
+            format!("{prefix}{name}")
+        }
+    }
 }
 
 /// The one joystick device that is read. The file repeats the same list for `joystick1` to
@@ -121,6 +144,20 @@ mod tests {
             read(&root, &Strings::default()).into_iter().map(|name| (name.name, name.device)).collect();
         let expected = [("m", "mouse"), ("p", "control_pad"), ("hat3_up", "joystick")];
         assert_eq!(names, expected.map(|(name, device)| (name.to_string(), device.to_string())));
+    }
+
+    #[test]
+    fn examples_are_written_like_rebind_inputs() {
+        let example = |key: &str, device: &str| name(key, "", "", device).example();
+        assert_eq!(example("button21", "joystick"), "js1_button21");
+        assert_eq!(example("maxis_x", "mouse"), "mo1_maxis_x");
+        assert_eq!(example("a", "control_pad"), "gp1_a");
+        assert_eq!(example("f1", "keyboard"), "kb1_f1");
+        assert_eq!(example("ralt", "keyboard"), "kb1_ralt+o");
+        assert_eq!(example("mouse3", "keyboard"), "kb1_lctrl+mouse3");
+        assert_eq!(example("mwheel_up", "keyboard"), "kb1_lctrl+mwheel_up");
+        assert_eq!(example("x", "unknown"), "");
+        assert_eq!(example("", "keyboard"), "");
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub enum Command {
     OpenFile,
     OpenCurrentRebindFile,
     OpenCustomRebindFile,
+    MergeRebindFile,
     SaveRebindFile,
     SaveRebindCopyAs,
     CreateBlankRebindFile,
@@ -20,6 +21,7 @@ pub enum Command {
     LocateGameFolder,
     ExtractDefaults,
     ShowUnusedCombos,
+    ResolveConflicts,
     ShowControlNames,
     AutofillKeyboard,
     ExportCsv,
@@ -67,8 +69,9 @@ pub fn shortcut(ctx: &Context) -> Option<Command> {
 }
 
 /// Shows the menus in a menu bar, with a check mark on the active theme and Extract
-/// Defaults only when `can_extract`. Returns the picked command.
-pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool) -> Option<Command> {
+/// Defaults only when `can_extract`, Merge Rebind File enabled only when `can_merge`, and Save
+/// Rebind File only when `can_save`. Returns the picked command.
+pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool, can_merge: bool, can_save: bool) -> Option<Command> {
     let mut picked = None;
     let mut item = |ui: &mut Ui, label: &str, command: Command| {
         let mut button = Button::new(label);
@@ -83,7 +86,8 @@ pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool) -> Option<
         item(ui, "Open defaultProfile", Command::OpenFile);
         item(ui, "Open Current Rebind File", Command::OpenCurrentRebindFile);
         item(ui, "Open Custom Rebind File...", Command::OpenCustomRebindFile);
-        item(ui, "Save Rebind File", Command::SaveRebindFile);
+        ui.add_enabled_ui(can_merge, |ui| item(ui, "Merge Rebind File...", Command::MergeRebindFile));
+        ui.add_enabled_ui(can_save, |ui| item(ui, "Save Rebind File", Command::SaveRebindFile));
         item(ui, "Save Rebind Copy As...", Command::SaveRebindCopyAs);
         item(ui, "Create Blank Rebind File...", Command::CreateBlankRebindFile);
         item(ui, "Close", Command::CloseFile);
@@ -109,6 +113,7 @@ pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool) -> Option<
     });
     ui.menu_button("Tools", |ui| {
         item(ui, "Unused Key Combinations...", Command::ShowUnusedCombos);
+        item(ui, "Resolve Control Conflicts", Command::ResolveConflicts);
         item(ui, "Show Control Names", Command::ShowControlNames);
         item(ui, "Autofill All Unbound Keyboard Controls", Command::AutofillKeyboard);
         ui.separator();

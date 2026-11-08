@@ -1,28 +1,32 @@
 # ctrlXref Star Citizen Control Bindings Cross-reference Utility
 
 
-A Windows desktop tool for viewing and editing [Star Citizen](https://robertsspaceindustries.com/) control bindings. ctrlXref cross-references the game's default control profile with your own rebind files, so you can see every action and its bindings in one table.
+A Windows desktop tool for viewing and modifying [Star Citizen](https://robertsspaceindustries.com/) control bindings. ctrlXref cross-references the game's default control profile with your own custom rebind files. You will be able to see and modify every action and its bindings in a single table. Merging multiple custom rebind files from various sources is now supported for creating a new custom binding with all your preferred bindings.
+### What its not
+ctrlXref does not identify as Star Citizen control map editor as the application is lacking proper modeling of various devices and the controls they provide. You can manipulate the controls manually inside the table cells but there's no dialogs, dropdowns, control press, etc. support. You are encouraged to use the Game integrated control editor or some other 3rd party solutions (as the great: [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your rebind xml files.  
 
 > [!NOTE]
 > ctrlXref is an unofficial fan project and is not affiliated with or endorsed by Cloud Imperium Games.
 
 > [!WARNING]
-> Work In Progress! This application is still a very early development release with testing of the functionality hardly started.
+> Work In Progress! This application is still a early development release with testing of the functionality hardly started.
 > Make manual backups of your controls under `StarCitizen\LIVE\user\client\0\controls\mappings\` before using ctrlXref 
 > as modifications made by this application are ***not reversible*** and might not work within the actual game.
 
 > [!NOTE] 
-> - TODO Update / Fix and integrated Help documentation.
-> - TODO Add a "Reset" button to revert all changes made to the table
-> - TODO Improvement of the "inline" editing and action modification behavior.
-> - TODO Joystick / pedal etc. real name mapping instead of js1_ js2_ jsn_
+> - TODO Update / improve the integrated Help documentation.
+> - TODO ***PDF*** File export?
+> - TODO Printer support (probably doable using the ***Light theme*** quite easily)?
+
 
 ## Features
 
 - Browse all ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, using the game's own `English labels.`
 - See default bindings side by side with your rebinds for keyboard, mouse, joysticks and gamepad.
 - Edit bindings directly in the table, with possible conflicts shown in red.
-- List the game's localized control names in a sortable table.
+- Merge multiple custom rebind files to create your preferred control setup and confirm which controls are truly bound to what action.
+- Conflicting controls manual resolving support (TODO improved edit features later).
+- List the game's control name list with examples in a sortable table.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
 - Search the table and the tree with regular expressions (`Ctrl+F`, `F3`, `Shift+F3`), keeping previous searches in a dropdown list.
 - Open the game's current `actionmaps.xml` or any mappings file you exported from the game.
@@ -35,7 +39,7 @@ ctrlXref writes only to rebind files. It never changes `Data.p4k` or `defaultPro
 
 ## Requirements
 
-- Windows
+- Windows 10 or later
 - A Star Citizen installation (or a valid Star Citizen Game `Data.p4k` under `StarCitizen\LIVE\` folder)
 - The [unp4k tools](#install-the-unp4k-tools), to extract the default controls from the game data
 - [Rust](https://www.rust-lang.org/tools/install) (current stable, with the MSVC toolchain), to build from source
@@ -146,7 +150,9 @@ cargo test      # Run the tests
 `version.txt` holds the application version. `build.rs` raises its patch number on the first build of each day with source changes, so the file regularly shows as modified.
 
 ### Donations
-If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive Coffee consumption: [classloader](https://paypal.me/SCclassloader?target=_blank)
+If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive Coffee consumption: [classloader](https://paypal.me/cassoverride?target=_blank)
+
+[comment]: # (Check the functionality of the paypal.me link as there are constant/random errors in PayPal account settings modifications and many submits and button presses return Try Again Later Errors and Warnings)
 
 ### Discord
 My Discord: [primordial](https://discord.com/users/primordial_23184)

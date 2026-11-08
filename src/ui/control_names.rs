@@ -9,10 +9,11 @@ use super::attribute_table::{AttributeTable, TableRow};
 pub const TITLE: &str = "ctrlXref - Control Names";
 
 /// The size of the window's content when it opens.
-pub const SIZE: egui::Vec2 = egui::vec2(760., 720.);
+pub const SIZE: egui::Vec2 = egui::vec2(900., 720.);
 
-/// The table's columns: the file's attributes, named like them, and the device.
-const COLUMNS: [&str; 4] = ["name", "localizationString", "shortLocString", "Device"];
+/// The table's columns: the file's attributes, named like them, the device, and an example of
+/// the control as written in the actions table's device columns.
+const COLUMNS: [&str; 5] = ["name", "localizationString", "shortLocString", "Device", "EXAMPLE"];
 
 /// The id of the window.
 pub fn viewport_id() -> egui::ViewportId {
@@ -39,6 +40,7 @@ impl ControlNamesWindow {
                     (COLUMNS[1].into(), name.localization.clone()),
                     (COLUMNS[2].into(), name.short.clone()),
                     (COLUMNS[3].into(), name.device.clone()),
+                    (COLUMNS[4].into(), name.example()),
                 ],
                 styles: Vec::new(),
             })
@@ -77,11 +79,11 @@ mod tests {
     }
 
     #[test]
-    fn the_columns_are_name_localization_string_short_string_and_device() {
+    fn the_columns_are_name_localization_string_short_string_device_and_example() {
         let window = window();
         assert_eq!(window.table.headers(), COLUMNS);
         let rows: Vec<Vec<String>> = window.table.document_rows().map(|(_, cells)| cells.to_vec()).collect();
-        assert_eq!(rows, [["b", "Bravo", "", "mouse"], ["a", "Alpha", "A", "joystick"]]);
+        assert_eq!(rows, [["b", "Bravo", "", "mouse", "mo1_b"], ["a", "Alpha", "A", "joystick", "js1_a"]]);
         assert_eq!(window.count, 2);
     }
 }
