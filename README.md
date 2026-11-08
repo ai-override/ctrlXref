@@ -149,14 +149,6 @@ cargo test      # Run the tests
 
 `version.txt` holds the application version. `build.rs` raises its patch number on the first build of each day with source changes, so the file regularly shows as modified.
 
-### Donations
-If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive Coffee consumption: [classloader](https://paypal.me/cassoverride?target=_blank)
-
-[comment]: # (Check the functionality of the paypal.me link as there are constant/random errors in PayPal account settings modifications and many submits and button presses return Try Again Later Errors and Warnings)
-
-### Discord
-My Discord: [primordial](https://discord.com/users/primordial_23184)
-
 ## License
 
 ctrlXref is released under the [MIT License](LICENSE). You are free to use, copy, modify, merge, publish, distribute, sublicense and sell copies of the software, as long as the copyright notice and license text are included in all copies or substantial portions of it. The software is provided "as is", without warranty of any kind. See the [`LICENSE`](LICENSE) file for the full terms.
@@ -165,3 +157,17 @@ Third-party components keep their own licenses:
 
 - [unp4k](https://github.com/dolkensp/unp4k) is a separate project under the MIT license. It isn't included in this repository.
 - The Electrolize font is under the SIL Open Font License. See [`assets/fonts/OFL.txt`](assets/fonts/OFL.txt).
+
+
+### Donations
+If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive Coffee consumption: [classloader](https://paypal.me/cassoverride?target=_blank)
+
+[comment]: # (Check the functionality of the paypal.me link as there are constant/random errors in PayPal account settings modifications and many submits and button presses return Try Again Later Errors and Warnings)
+
+### Discord
+My Discord: [primordial](https://discord.com/users/primordial_23184)
+
+## Screenshots
+- ![Action Table Column Sorting](https://github.com/ai-override/ctrlXref/tree/main/assets/images/ctrlXref_sorting_1387x775.jpg)
+- ![Conflicting Controls dindings Resolving](ctrlXref_resolve_1387x775.jpg)
+- ![Autofilling Unbound Keyboard Controls](https://github.com/ai-override/ctrlXref/tree/main/assets/images/ctrlXref_autofill_1387x754.jpg)
