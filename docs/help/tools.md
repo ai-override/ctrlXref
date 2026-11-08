@@ -72,6 +72,13 @@ Gives every action without a keyboard binding the next unused key combination, i
 order of the table. The new bindings are added to the open rebind file, so open one first
 (**File > Open Current Rebind File** or **Open Custom Rebind File...**).
 
+An action counts as unbound too when its keyboard bindings, default or rebind, have no actual key:
+only a mouse control such as `mouse2`, `maxis_z` or `mwheel_up`, or a modifier held with another
+device's control, such as `ralt+mouse2` or `kb1_lalt+js1_button3`. It then gets a key that a device
+sending keystrokes can use. Check in the game that the mouse control still works for those actions.
+An existing rebind of this kind stays, so the cell then has two bindings and is shown in red.
+A modifier on its own, such as `lshift`, is a key.
+
 When there are more unbound actions than unused combinations, the remaining actions stay
 unbound. The message afterwards says how many actions were filled.
 

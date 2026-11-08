@@ -73,9 +73,31 @@ pub fn count_empty_keyboard(root: &Element, rows: &[Vec<usize>], rebinds: &Rebin
     rows.iter().filter(|path| has_empty_keyboard(root, path, rebinds)).count()
 }
 
-/// Whether the action at `path` has no keyboard input. Its keyboard rebinds replace the
-/// profile's binding; a blank binding like `keyboard=" "` or only empty rebinds like
-/// `kb1_ ` bind nothing.
+/// Whether `name` is a mouse control, which the game's lists also give for the keyboard: a
+/// `mouse1`, `maxis_z` or `mwheel_up`. A combination like `lalt+mouse2` is not one.
+pub fn is_mouse_control(name: &str) -> bool {
+    ["mouse", "maxis", "mwheel"].iter().any(|start| name.starts_with(start))
+}
+
+/// Whether keyboard binding `input`, from the profile or a rebind, ends in a key of the keyboard.
+/// In `ralt+mouse2` or `kb1_lalt+js1_button3` the key is only a modifier of another device's
+/// control, so those don't; nor do a blank input and an empty rebind like `kb1_ `.
+fn binds_a_key(input: &str) -> bool {
+    if input.is_empty() || is_empty_rebind(input) {
+        return false;
+    }
+    let control = input.rsplit('+').next().unwrap_or(input).trim();
+    let prefixed = control.split_once('_').filter(|(device, _)| {
+        rebind_device(device).is_some() && device.len() > 2 && device[2..].bytes().all(|byte| byte.is_ascii_digit())
+    });
+    match prefixed {
+        Some((device, name)) => rebind_device(device) == Some(DEVICES[0]) && !is_mouse_control(name),
+        None => !is_mouse_control(control),
+    }
+}
+
+/// Whether the action at `path` has no key bound on the keyboard. Its keyboard rebinds replace
+/// the profile's binding; see [`binds_a_key`] for what binds one.
 fn has_empty_keyboard(root: &Element, path: &[usize], rebinds: &Rebinds) -> bool {
     let Some(action) = xml_doc::element_at(root, path) else {
         return false;
@@ -89,7 +111,7 @@ fn has_empty_keyboard(root: &Element, path: &[usize], rebinds: &Rebinds) -> bool
     } else {
         rebound.join(",")
     };
-    !value.split(',').map(str::trim).any(|input| !input.is_empty() && !is_empty_rebind(input))
+    !value.split(',').map(str::trim).any(binds_a_key)
 }
 
 /// `(actionmap name, action name)` of each action in `rows`, in order, that has no
@@ -617,6 +639,55 @@ mod tests {
         let unbound = unbound_keyboard_actions(&profile, &rows, &read_rebinds(&rebind_file));
         // a is bound by the profile and b by its rebind; d's only keyboard rebind is empty.
         assert_eq!(unbound, [("m".into(), "c".into()), ("m".into(), "d".into())]);
+    }
+
+    #[test]
+    fn autofill_targets_actions_with_only_mouse_controls_as_keyboard_default() {
+        let profile = xml_doc::from_str(
+            r#"<p><actionmap name="m">
+                <action name="axis" keyboard="maxis_z"/>
+                <action name="button" keyboard="mouse2"/>
+                <action name="wheels" keyboard="mwheel_up, mwheel_down"/>
+                <action name="combo" keyboard="ralt+mouse2"/>
+                <action name="wheel_combo" keyboard="lalt+mwheel_up"/>
+                <action name="mixed" keyboard="mouse1, f"/>
+                <action name="key_combo" keyboard="lalt+k"/>
+                <action name="numpad" keyboard="np_5"/>
+                <action name="modifier" keyboard="lshift"/>
+                <action name="rebound" keyboard="mouse1"/>
+                <action name="rebound_to_mouse" keyboard="f"/>
+                <action name="rebound_to_mouse_combo" keyboard="f"/>
+                <action name="rebound_to_joystick_combo" keyboard="f"/>
+                <action name="rebound_to_gamepad_combo" keyboard="f"/>
+                <action name="joystick_rebind_only" keyboard=" "/>
+            </actionmap></p>"#,
+        )
+        .unwrap();
+        let rebind_file = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="rebound"><rebind input="kb1_g"/></action>
+                <action name="rebound_to_mouse"><rebind input="kb1_mouse3"/></action>
+                <action name="rebound_to_mouse_combo"><rebind input="kb1_lctrl+mouse3"/></action>
+                <action name="rebound_to_joystick_combo"><rebind input="kb1_lalt+js1_button3"/></action>
+                <action name="rebound_to_gamepad_combo"><rebind input="kb1_lalt+gp1_a"/></action>
+                <action name="joystick_rebind_only"><rebind input="js1_lalt+button3"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let rows = action_paths(&profile, &find_actionmaps(&profile));
+        let unbound = unbound_keyboard_actions(&profile, &rows, &read_rebinds(&rebind_file));
+        let expected = [
+            "axis",
+            "button",
+            "wheels",
+            "combo",
+            "wheel_combo",
+            "rebound_to_mouse",
+            "rebound_to_mouse_combo",
+            "rebound_to_joystick_combo",
+            "rebound_to_gamepad_combo",
+            "joystick_rebind_only",
+        ]
+        .map(|name| ("m".to_string(), name.to_string()));
+        assert_eq!(unbound, expected);
     }
 
     #[test]

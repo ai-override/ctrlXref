@@ -30,7 +30,7 @@ impl ControlName {
         }
         if device == "keyboard" && keys::MODIFIERS.contains(&name) {
             format!("{prefix}{name}+o")
-        } else if device == "keyboard" && ["mouse", "maxis", "mwheel"].iter().any(|start| name.starts_with(start)) {
+        } else if device == "keyboard" && rebinds::is_mouse_control(name) {
             format!("{prefix}lctrl+{name}")
         } else {
             format!("{prefix}{name}")
