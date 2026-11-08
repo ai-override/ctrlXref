@@ -39,7 +39,7 @@ ctrlXref writes only to rebind files. It never changes `Data.p4k` or `defaultPro
 
 ## Requirements
 
-- Windows 10 or later
+- Windows 10 or later 64bit
 - A Star Citizen installation (or a valid Star Citizen Game `Data.p4k` under `StarCitizen\LIVE\` folder)
 - The [unp4k tools](#install-the-unp4k-tools), to extract the default controls from the game data
 - [Rust](https://www.rust-lang.org/tools/install) (current stable, with the MSVC toolchain), to build from source
@@ -166,6 +166,11 @@ If you find this utility useful, consider making a small donation helping me wit
 
 ### Discord
 My Discord: [primordial](https://discord.com/users/primordial_23184)
+
+## Binary
+For all of us lazy gamers, here's the pre-built exe. No installation required or even supported.
+- Download and extract : [ctrlxref_0_5_8.zip](https://github.com/ai-override/ctrlXref/tree/main/assets/release/ctrlxref_0_5_8.zip) (4548 KB)
+
 
 ## Screenshots
 - ![Action Table Column Sorting](https://github.com/ai-override/ctrlXref/tree/main/assets/images/ctrlXref_sorting_1387x775.jpg)

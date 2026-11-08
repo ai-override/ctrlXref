@@ -1,7 +1,7 @@
 [package]
 name = "ctrlxref"
 # The displayed version comes from version.txt, which build.rs bumps daily.
-version = "0.5.1"
+version = "0.5.8"
 edition = "2024"
 default-run = "ctrlxref"
 
