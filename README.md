@@ -2,8 +2,8 @@
 
 
 A Windows desktop tool for viewing and modifying [Star Citizen](https://robertsspaceindustries.com/) control bindings. ctrlXref cross-references the game's default control profile with your own custom rebind files. You will be able to see and modify every action and its bindings in a single table. Merging multiple custom rebind files from various sources is now supported for creating a new custom binding with all your preferred bindings.
-### What its not
-ctrlXref does not identify as Star Citizen control map editor as the application is lacking proper modeling of various devices and the controls they provide. You can manipulate the controls manually inside the table cells but there's no dialogs, dropdowns, control press, etc. support. You are encouraged to use the Game integrated control editor or some other 3rd party solutions (as the great: [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your rebind xml files.  
+### What it's not
+ctrlXref does not identify as [Star Citizen](https://robertsspaceindustries.com/) control profile editor as the application is lacking proper modeling of various devices and the controls they provide. You can manipulate the controls manually inside the table cells but there's no dialogs, dropdowns, key or button press, etc. support. You are encouraged to use the Game integrated control editor or some other 3rd party solutions (as the great: [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your control settings.  
 
 > [!NOTE]
 > ctrlXref is an unofficial fan project and is not affiliated with or endorsed by Cloud Imperium Games.
