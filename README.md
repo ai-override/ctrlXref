@@ -176,6 +176,6 @@ For all of us lazy gamers, here's the pre-built exe. No installation required or
 
 
 ## Screenshots
-- ![Action Table Column Sorting](https://github.com/ai-override/ctrlXref/tree/main/assets/images/ctrlXref_sorting_1387x775.jpg)
-- ![Conflicting Controls dindings Resolving](ctrlXref_resolve_1387x775.jpg)
-- ![Autofilling Unbound Keyboard Controls](https://github.com/ai-override/ctrlXref/tree/main/assets/images/ctrlXref_autofill_1387x754.jpg)
+- ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
+- ![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
+- ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
