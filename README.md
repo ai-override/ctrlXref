@@ -160,7 +160,10 @@ Third-party components keep their own licenses:
 
 
 ### Donations
-If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive Coffee consumption: [classloader](https://paypal.me/cassoverride?target=_blank)
+If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive high quality Coffee consumption to:
+[classloader](https://paypal.me/SCclassloader?target=_blank)
+
+[comment]: # (classloader https://paypal.me/cassoverride?target=_blank Dysfuncional atm because PayPal refuses to accept my business account for receivinfg payments.) 
 
 [comment]: # (Check the functionality of the paypal.me link as there are constant/random errors in PayPal account settings modifications and many submits and button presses return Try Again Later Errors and Warnings)
 
