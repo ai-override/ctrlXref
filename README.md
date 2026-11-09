@@ -167,9 +167,9 @@ If you find this utility useful, consider making a small donation helping me wit
 ### Discord
 My Discord: [primordial](https://discord.com/users/primordial_23184)
 
-## Binary
+## Release
 For all of us lazy gamers, here's the pre-built exe. No installation required or even supported.
-- Download and extract : [ctrlxref_0_5_8.zip](https://github.com/ai-override/ctrlXref/tree/main/assets/release/ctrlxref_0_5_8.zip) (4548 KB)
+[Latest Release](https://github.com/ai-override/ctrlXref/releases)
 
 
 ## Screenshots
