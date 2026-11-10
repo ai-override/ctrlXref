@@ -114,6 +114,17 @@ struct Editing {
     focus: bool,
 }
 
+/// Going through the conflicting cells, editing one at a time.
+struct Resolving {
+    /// Where it is: the row's source index and the column.
+    source_ix: usize,
+    col_ix: usize,
+    /// Which way to go next, `true` for forward, once the committed edit has been applied.
+    step: Option<bool>,
+    /// The displayed row just arrived at, to select and scroll to.
+    arrived: Option<usize>,
+}
+
 /// How much of the selection color marks what a search marked.
 const MARKED_STRENGTH: f32 = 0.45;
 
@@ -172,6 +183,8 @@ pub struct TableOutput {
     pub header_rects: Vec<egui::Rect>,
     /// The key of the column the user asked to clear with the context menu.
     pub clear_column: Option<String>,
+    /// Whether resolving conflicts ended because none are left.
+    pub conflicts_resolved: bool,
 }
 
 pub struct AttributeTable {
@@ -183,9 +196,10 @@ pub struct AttributeTable {
     sort: Option<(usize, ColumnSort)>,
     /// Keys of the columns whose cells can be edited with a double-click.
     editable: HashSet<String>,
-    /// Keys of the columns whose titles keep their case in the dark theme's uppercase headers.
+    /// Keys of the columns whose titles keep their case in the uppercase headers.
     exact_titles: HashSet<String>,
     editing: Option<Editing>,
+    resolving: Option<Resolving>,
     /// Committed edits not yet taken by the owner.
     edits: Vec<CellEdit>,
     /// The cells selected with a drag or Select All. Replaces the highlight of the selected row.
@@ -208,6 +222,7 @@ impl AttributeTable {
             editable: HashSet::new(),
             exact_titles: HashSet::new(),
             editing: None,
+            resolving: None,
             edits: Vec::new(),
             selection: None,
             dragging: false,
@@ -380,6 +395,86 @@ impl AttributeTable {
         }
     }
 
+    /// Starts editing the first conflicting cell, to go through them with [`Self::resolve_keys`].
+    /// Returns whether there is one.
+    pub fn start_resolving(&mut self) -> bool {
+        match self.next_conflict(None, true) {
+            Some(cell) => {
+                self.open_conflict(cell);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The conflicting cell after `from` (a displayed row and column), or before it when not
+    /// `forward`, going around the ends. Rows go from top to bottom, and within one left to right.
+    fn next_conflict(&self, from: Option<(usize, usize)>, forward: bool) -> Option<(usize, usize)> {
+        let conflicts: Vec<(usize, usize)> = self
+            .rows
+            .iter()
+            .enumerate()
+            .flat_map(|(row_ix, row)| {
+                let columns = row.styles.iter().enumerate();
+                columns.filter(|(_, style)| **style == Some(CellStyle::Conflict)).map(move |(col_ix, _)| (row_ix, col_ix))
+            })
+            .collect();
+        let next = from.and_then(|from| match forward {
+            true => conflicts.iter().find(|cell| **cell > from),
+            false => conflicts.iter().rev().find(|cell| **cell < from),
+        });
+        next.or(if forward { conflicts.first() } else { conflicts.last() }).copied()
+    }
+
+    fn open_conflict(&mut self, (row_ix, col_ix): (usize, usize)) {
+        self.start_edit(row_ix, col_ix);
+        self.resolving = Some(Resolving { source_ix: self.rows[row_ix].source_ix, col_ix, step: None, arrived: Some(row_ix) });
+    }
+
+    /// While resolving conflicts: Tab or Enter keeps the cell's text and goes to the next
+    /// conflict, Shift+Tab to the previous, and Escape drops the text and stops. Leaving the editor
+    /// any other way, such as by clicking elsewhere, also stops. Runs before the editor is
+    /// drawn, to get the keys first. Returns whether no conflicts are left.
+    fn resolve_keys(&mut self, ctx: &egui::Context) -> bool {
+        let Some(resolving) = &mut self.resolving else {
+            return false;
+        };
+        let (escape, step) = ctx.input_mut(|input| {
+            // The variant with Shift comes first: the plain one also matches with Shift held.
+            let escape = input.consume_key(Modifiers::NONE, Key::Escape);
+            let step = if input.consume_key(Modifiers::SHIFT, Key::Tab) {
+                Some(false)
+            } else if input.consume_key(Modifiers::NONE, Key::Tab) || input.consume_key(Modifiers::NONE, Key::Enter) {
+                Some(true)
+            } else {
+                None
+            };
+            (escape, step)
+        });
+        if escape {
+            self.resolving = None;
+            self.finish_edit(false);
+        } else if step.is_some() {
+            resolving.step = step;
+            self.finish_edit(true);
+            // The next frame goes on, with the edit applied and the conflicts up to date.
+            ctx.request_repaint();
+        } else if let Some(forward) = resolving.step.take() {
+            let (source_ix, col_ix) = (resolving.source_ix, resolving.col_ix);
+            let from = self.row_of(source_ix).map(|row_ix| (row_ix, col_ix));
+            match self.next_conflict(from, forward) {
+                Some(cell) => self.open_conflict(cell),
+                None => {
+                    self.resolving = None;
+                    return true;
+                }
+            }
+        } else if self.editing.is_none() {
+            self.resolving = None;
+        }
+        false
+    }
+
     /// Shows one row per [`TableRow`]. The columns are an "Element" column when the rows
     /// have different tags, the `leading` columns in that order (always present, even when
     /// no row has them), then the other cell names in first-seen order. Missing cells stay
@@ -521,6 +616,10 @@ impl AttributeTable {
         if self.columns.is_empty() {
             return out;
         }
+        out.conflicts_resolved = self.resolve_keys(ui.ctx());
+        let arrived = self.resolving.as_mut().and_then(|resolving| resolving.arrived.take());
+        out.clicked_row = arrived;
+        let scroll_to = arrived.or(scroll_to);
         // Column widths are kept per set of columns.
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for column in &self.columns {
@@ -557,17 +656,16 @@ impl AttributeTable {
                         for (col_ix, column) in self.columns.iter().enumerate() {
                             let current = sort.filter(|(ix, _)| *ix == col_ix).map(|(_, sort)| sort);
                             let (rect, response) = header.col(|ui| {
+                                let title = if self.exact_titles.contains(&column.key) {
+                                    theme::exact_heading_text(&column.name)
+                                } else {
+                                    theme::heading_text(&column.name)
+                                };
                                 let title = if ui.visuals().dark_mode {
                                     let sorted = matches!(current, Some(ColumnSort::Ascending | ColumnSort::Descending));
-                                    let color = theme::paint_header_cell(ui, sorted);
-                                    let title = if self.exact_titles.contains(&column.key) {
-                                        theme::exact_heading_text(&column.name)
-                                    } else {
-                                        theme::heading_text(&column.name)
-                                    };
-                                    title.color(color)
+                                    title.color(theme::paint_header_cell(ui, sorted))
                                 } else {
-                                    RichText::new(&column.name).strong()
+                                    title
                                 };
                                 // The whole cell takes the click: the label senses nothing.
                                 let mut text_rect = ui.max_rect();
@@ -701,9 +799,23 @@ impl AttributeTable {
             && editing.source_ix == source_ix
             && editing.col_ix == col_ix
         {
-            let response = ui.add(TextEdit::singleline(&mut editing.text).desired_width(f32::INFINITY));
+            // While resolving, Tab goes to the next conflict instead of the next widget.
+            let edit = TextEdit::singleline(&mut editing.text).desired_width(f32::INFINITY).lock_focus(self.resolving.is_some());
+            let mut output = edit.show(ui);
+            let response = output.response.response.clone();
+            // Shift+click keeps extending the selection.
+            if response.clicked()
+                && !ui.input(|input| input.modifiers.shift)
+                && let Some(cursor) = output.cursor_range
+            {
+                let (start, end) = binding_selection(&editing.text, usize::from(cursor.primary.index));
+                let range = egui::text::CCursorRange::two(egui::text::CCursor::new(start), egui::text::CCursor::new(end));
+                output.state.cursor.set_char_range(Some(range));
+                output.state.store(ui.ctx(), response.id);
+            }
             if editing.focus {
                 response.request_focus();
+                response.scroll_to_me(None);
                 editing.focus = false;
             } else if ui.input(|input| input.key_pressed(Key::Escape)) {
                 self.finish_edit(false);
@@ -738,6 +850,40 @@ impl AttributeTable {
         // Other text colors are hard to read on the selection's.
         let rich = if cell_selected { rich.color(ui.visuals().selection.stroke.color) } else { rich };
         ui.add(Label::new(rich).selectable(false).truncate());
+    }
+}
+
+/// The characters a click at character `cursor` selects in the text of a cell: the binding there,
+/// all of it when the cell has only one. With several, it goes with the separator after it, or for
+/// the last one the separator before it, so that deleting the selection leaves one separator
+/// between the bindings that remain.
+fn binding_selection(text: &str, cursor: usize) -> (usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let separators: Vec<usize> =
+        chars.iter().enumerate().filter(|(_, c)| matches!(c, '|' | ',')).map(|(ix, _)| ix).collect();
+    let skip_spaces = |mut ix: usize| {
+        while chars.get(ix).is_some_and(|c| c.is_whitespace()) {
+            ix += 1;
+        }
+        ix
+    };
+    let binding = separators.iter().filter(|separator| **separator < cursor).count();
+    match separators.get(binding) {
+        // Up to the next binding, and from the start of this one.
+        Some(separator) => {
+            let start = if binding == 0 { 0 } else { skip_spaces(separators[binding - 1] + 1) };
+            (start, skip_spaces(separator + 1))
+        }
+        None => match separators.last() {
+            Some(separator) => {
+                let mut start = *separator;
+                while start > 0 && chars[start - 1].is_whitespace() {
+                    start -= 1;
+                }
+                (start, chars.len())
+            }
+            None => (0, chars.len()),
+        },
     }
 }
 
@@ -1340,6 +1486,195 @@ mod tests {
         assert_eq!(table.selection, None);
         let (_, copied) = headless.frame(&mut table, vec![egui::Event::Copy], Some(1));
         assert_eq!(copied, None);
+    }
+
+    /// Rows of columns `a` and `b`, with the given `(row, column name)` cells in conflict.
+    fn conflict_table(conflicts: &[(usize, &str)]) -> Vec<TableRow> {
+        (0..4)
+            .map(|row| TableRow {
+                tag: "x".into(),
+                cells: ["a", "b"].map(|name| (name.to_string(), format!("{name}{row}"))).to_vec(),
+                styles: conflicts
+                    .iter()
+                    .filter(|(ix, _)| *ix == row)
+                    .map(|(_, name)| (name.to_string(), CellStyle::Conflict))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    fn key_press(key: Key, modifiers: egui::Modifiers) -> Vec<egui::Event> {
+        vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]
+    }
+
+    fn editing_cell(table: &AttributeTable) -> Option<(usize, usize)> {
+        table.editing.as_ref().map(|editing| (editing.source_ix, editing.col_ix))
+    }
+
+    /// A table in conflict at row 0 column b, row 2 column a and row 2 column b, resolving.
+    fn resolving_table() -> (AttributeTable, Headless) {
+        let mut table = AttributeTable::new();
+        table.set_rows(&["a", "b"], &conflict_table(&[(0, "b"), (2, "a"), (2, "b")]));
+        table.set_editable(&["a", "b"]);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        assert!(table.start_resolving());
+        headless.frame(&mut table, Vec::new(), None);
+        headless.frame(&mut table, Vec::new(), None);
+        (table, headless)
+    }
+
+    /// Presses `key` and runs the frame after, which arrives at the next conflict.
+    fn press_key(headless: &mut Headless, table: &mut AttributeTable, key: Key, modifiers: egui::Modifiers) {
+        headless.frame(table, key_press(key, modifiers), None);
+        headless.frame(table, Vec::new(), None);
+        headless.frame(table, Vec::new(), None);
+    }
+
+    #[test]
+    fn tab_and_shift_tab_go_through_the_conflicts_even_unresolved() {
+        let (mut table, mut headless) = resolving_table();
+        assert_eq!(editing_cell(&table), Some((0, 1)));
+        press_key(&mut headless, &mut table, Key::Tab, egui::Modifiers::NONE);
+        assert_eq!(editing_cell(&table), Some((2, 0)));
+        press_key(&mut headless, &mut table, Key::Tab, egui::Modifiers::NONE);
+        assert_eq!(editing_cell(&table), Some((2, 1)));
+        press_key(&mut headless, &mut table, Key::Tab, egui::Modifiers::SHIFT);
+        assert_eq!(editing_cell(&table), Some((2, 0)));
+        press_key(&mut headless, &mut table, Key::Tab, egui::Modifiers::SHIFT);
+        assert_eq!(editing_cell(&table), Some((0, 1)));
+        // Around the start, and nothing changed on the way.
+        press_key(&mut headless, &mut table, Key::Tab, egui::Modifiers::SHIFT);
+        assert_eq!(editing_cell(&table), Some((2, 1)));
+        assert!(table.take_edits().is_empty());
+    }
+
+    #[test]
+    fn escape_stops_resolving_without_changing_the_cell() {
+        let (mut table, mut headless) = resolving_table();
+        table.editing.as_mut().unwrap().text = "changed".into();
+        press_key(&mut headless, &mut table, Key::Escape, egui::Modifiers::NONE);
+        assert_eq!(editing_cell(&table), None);
+        assert!(table.resolving.is_none());
+        assert!(table.take_edits().is_empty());
+    }
+
+    #[test]
+    fn tab_commits_the_cell_and_goes_on_after_the_table_is_rebuilt() {
+        let (mut table, mut headless) = resolving_table();
+        table.editing.as_mut().unwrap().text = "b0".to_string() + "x";
+        headless.frame(&mut table, key_press(Key::Tab, egui::Modifiers::NONE), None);
+        let edits = table.take_edits();
+        assert_eq!(edits, [CellEdit { source_ix: 0, column: "b".into(), value: "b0x".into() }]);
+        // The owner applies the edit, which resolves that conflict.
+        table.set_rows(&["a", "b"], &conflict_table(&[(2, "a"), (2, "b")]));
+        headless.frame(&mut table, Vec::new(), None);
+        assert_eq!(editing_cell(&table), Some((2, 0)));
+    }
+
+    #[test]
+    fn resolving_ends_when_no_conflicts_are_left_or_the_table_changes() {
+        let (mut table, mut headless) = resolving_table();
+        headless.frame(&mut table, key_press(Key::Tab, egui::Modifiers::NONE), None);
+        table.set_rows(&["a", "b"], &conflict_table(&[]));
+        let (out, _) = headless.frame(&mut table, Vec::new(), None);
+        assert!(out.conflicts_resolved);
+        assert!(table.resolving.is_none());
+
+        let (mut table, mut headless) = resolving_table();
+        table.set_rows(&["a", "b"], &conflict_table(&[(0, "b")]));
+        headless.frame(&mut table, Vec::new(), None);
+        assert!(table.resolving.is_none());
+    }
+
+    #[test]
+    fn without_conflicts_resolving_does_not_start() {
+        let mut table = AttributeTable::new();
+        table.set_rows(&["a", "b"], &conflict_table(&[]));
+        table.set_editable(&["a", "b"]);
+        assert!(!table.start_resolving());
+        assert!(table.resolving.is_none());
+    }
+
+    #[test]
+    fn conflicts_follow_the_displayed_order() {
+        let mut table = AttributeTable::new();
+        table.set_rows(&["a", "b"], &conflict_table(&[(0, "a"), (3, "a")]));
+        table.set_editable(&["a", "b"]);
+        table.set_sort(0, ColumnSort::Descending);
+        assert!(table.start_resolving());
+        assert_eq!(editing_cell(&table), Some((3, 0)));
+    }
+
+    /// What a click at character `cursor` of `text` selects, and what deleting that leaves.
+    fn clicked(text: &str, cursor: usize) -> (String, String) {
+        let (start, end) = binding_selection(text, cursor);
+        let chars: Vec<char> = text.chars().collect();
+        (chars[start..end].iter().collect(), chars[..start].iter().chain(&chars[end..]).collect())
+    }
+
+    #[test]
+    fn a_click_selects_one_binding_with_its_separator() {
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(clicked("kb1_lalt+f8", 4), pair("kb1_lalt+f8", ""));
+        assert_eq!(clicked("kb1_x", 0), pair("kb1_x", ""));
+        assert_eq!(clicked("kb1_x", 5), pair("kb1_x", ""));
+
+        let two = "kb1_lalt+f8 | kb1_ralt+g";
+        assert_eq!(clicked(two, 3), pair("kb1_lalt+f8 | ", "kb1_ralt+g"));
+        assert_eq!(clicked(two, 11), pair("kb1_lalt+f8 | ", "kb1_ralt+g"));
+        assert_eq!(clicked(two, 18), pair(" | kb1_ralt+g", "kb1_lalt+f8"));
+        assert_eq!(clicked(two, 24), pair(" | kb1_ralt+g", "kb1_lalt+f8"));
+
+        let three = "kb1_a | kb1_b | kb1_c";
+        assert_eq!(clicked(three, 2), pair("kb1_a | ", "kb1_b | kb1_c"));
+        assert_eq!(clicked(three, 10), pair("kb1_b | ", "kb1_a | kb1_c"));
+        assert_eq!(clicked(three, 20), pair(" | kb1_c", "kb1_a | kb1_b"));
+
+        let four = "a | b | c | d";
+        assert_eq!(clicked(four, 8), pair("c | ", "a | b | d"));
+        assert_eq!(clicked("", 0), pair("", ""));
+    }
+
+    /// The characters selected in the focused editor, in order.
+    fn editor_selection(headless: &Headless) -> (usize, usize) {
+        let id = headless.ctx.memory(|memory| memory.focused()).expect("the editor has the focus");
+        let state = egui::text_edit::TextEditState::load(&headless.ctx, id).expect("the editor has a state");
+        let [start, end] = state.cursor.char_range().expect("a cursor").sorted_cursors();
+        (usize::from(start.index), usize::from(end.index))
+    }
+
+    fn click_at(headless: &mut Headless, table: &mut AttributeTable, pos: egui::Pos2) {
+        headless.frame(table, vec![egui::Event::PointerMoved(pos)], None);
+        headless.frame(table, vec![Headless::press(pos, true)], None);
+        headless.release(table, pos);
+    }
+
+    #[test]
+    fn clicking_in_the_cell_editor_selects_what_is_under_the_pointer() {
+        let rows = vec![TableRow {
+            tag: "a".into(),
+            cells: vec![("a".to_string(), "aaaaaaaaaa | bbbbbbbbbb".to_string())],
+            styles: Vec::new(),
+        }];
+        let mut table = AttributeTable::new();
+        table.set_rows(&["a"], &rows);
+        table.set_editable(&["a"]);
+        table.start_edit(0, 0);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+
+        let cell = headless.cell(0, 0);
+        let left = headless.header_rects[0].left();
+        click_at(&mut headless, &mut table, egui::pos2(left + 12., cell.y));
+        assert_eq!(editor_selection(&headless), (0, 13));
+        click_at(&mut headless, &mut table, egui::pos2(left + 130., cell.y));
+        assert_eq!(editor_selection(&headless), (10, 23));
+        // Back to the first, and past the end of the text, which is the last binding too.
+        click_at(&mut headless, &mut table, egui::pos2(left + 12., cell.y));
+        assert_eq!(editor_selection(&headless), (0, 13));
+        click_at(&mut headless, &mut table, egui::pos2(left + 180., cell.y));
+        assert_eq!(editor_selection(&headless), (10, 23));
+        // The text stays until the user changes it.
+        assert_eq!(table.editing.as_ref().unwrap().text, "aaaaaaaaaa | bbbbbbbbbb");
     }
 
     #[test]

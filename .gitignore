@@ -4,3 +4,4 @@
 /.rustc_info.json
 *.new
 /.cargo/config.toml
+/samples/example.out.xml

@@ -11,15 +11,23 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ctrlxref::localization::Strings;
+use ctrlxref::rebinds::{
+    DEVICES, MAX_HEADER_LABEL, Rebinds, action_key, action_paths, clear_device_rebinds, complete_blank_layout,
+    count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind, merge_rebinds,
+    parse_cell_inputs, profile_input, read_rebinds, rebind_device, set_device_rebinds, set_header_label,
+    set_keyboard_rebind, unbound_keyboard_actions,
+};
 use ctrlxref::search::{self, Place};
 use ctrlxref::xml_doc;
 use ctrlxref::{extract, game_dir, keys};
+use eframe::egui::text::CCursor;
+use eframe::egui::text_selection::CCursorRange;
 use eframe::egui::{
-    self, Align, Align2, Color32, Context, IconData, Id, Key, Layout, RichText, ScrollArea, Theme, ViewportBuilder,
-    ViewportCommand,
+    self, Align, Align2, Color32, Context, IconData, Id, Key, Layout, RichText, ScrollArea, TextEdit, Theme,
+    ViewportBuilder, ViewportCommand,
 };
 use egui_commonmark::CommonMarkCache;
-use xmltree::{Element, XMLNode};
+use xmltree::Element;
 
 use super::attribute_table::{self, AttributeTable, CellEdit, CellStyle, TableRow};
 use super::control_names::{self, ControlNamesWindow};
@@ -33,15 +41,6 @@ const ROOT_ID: &str = "r";
 
 /// Attributes whose value is shown next to the element name in the tree.
 const LABEL_ATTRIBUTES: [&str; 4] = ["name", "id", "key", "action"];
-
-/// The only elements listed in the tree; their children are the table rows.
-const ACTIONMAP_TAG: &str = "actionmap";
-
-/// Child element of an action in a rebind file; its `input` fills its device's column.
-const REBIND_TAG: &str = "rebind";
-
-/// Input devices; an action binds them in an attribute or in a child element of that name.
-const DEVICES: [&str; 4] = ["keyboard", "mouse", "joystick", "gamepad"];
 
 /// Read-only column with the profile's own bindings, space separated, so the device
 /// columns only hold rebinds and can all be edited.
@@ -79,9 +78,6 @@ const HELP_SIZE: egui::Vec2 = egui::vec2(760., 720.);
 /// How long a notification stays up; errors stay longer.
 const TOAST_TIME: Duration = Duration::from_secs(5);
 const ERROR_TOAST_TIME: Duration = Duration::from_secs(9);
-
-/// Rebind inputs by `(actionmap name, action name)`, in file order.
-type Rebinds = HashMap<(String, String), Vec<String>>;
 
 /// A tree node: an actionmap with its actions, or an action (no children).
 struct TreeNode {
@@ -126,6 +122,9 @@ struct Document {
     /// The last opened rebind file's tree, which the save actions write. The profile `root`
     /// is exported from the game's p4k package and is never written.
     rebind_root: Option<Element>,
+    /// Whether another rebind file was merged into it, so that it is no longer what `rebind_path`
+    /// holds plus edits and Save Rebind File is off.
+    merged: bool,
     /// Texts for `@key` references.
     strings: Rc<Strings>,
     /// Actions with a blank keyboard cell in the table, rebinds applied.
@@ -157,6 +156,8 @@ enum DialogAction {
     OpenRebindFile(PathBuf),
     /// Saves the open rebind file, and then does what was asked if that worked.
     SaveThen(AfterPrompt),
+    /// Asks where to save the open rebind file, and then does what was asked if that worked.
+    SaveAsThen(AfterPrompt),
     /// Does what was asked without saving the open rebind file.
     DiscardThen(AfterPrompt),
 }
@@ -168,6 +169,8 @@ struct UndoStep {
     root: Element,
     /// Whether that state had changes that are not saved.
     modified: bool,
+    /// Whether the change was the first merge into the file, so undoing it ends the merged state.
+    first_merge: bool,
 }
 
 /// The changes to the open rebind file that Ctrl+Z can undo, latest last.
@@ -177,7 +180,7 @@ struct UndoStack(Vec<UndoStep>);
 impl UndoStack {
     /// Remembers the state before a change, forgetting the oldest beyond [`MAX_UNDO`].
     fn push(&mut self, label: String, root: Element, modified: bool) {
-        self.0.push(UndoStep { label, root, modified });
+        self.0.push(UndoStep { label, root, modified, first_merge: false });
         if self.0.len() > MAX_UNDO {
             self.0.remove(0);
         }
@@ -277,6 +280,13 @@ impl Dialog {
     }
 }
 
+/// The box Save Rebind Copy As shows first, asking for the copy's header label.
+struct LabelPrompt {
+    text: String,
+    /// Set until the field has taken the focus with all its text selected.
+    focus: bool,
+}
+
 pub struct CtrlXrefApp {
     ctx: Context,
     table: AttributeTable,
@@ -317,8 +327,14 @@ pub struct CtrlXrefApp {
     rebinds_modified: bool,
     /// The changes to the open rebind file that Ctrl+Z can undo.
     undo: UndoStack,
+    /// What to do after the Save As box the unsaved rebinds question asked for, shown next.
+    save_as_after: Option<AfterPrompt>,
     /// The Tools > Show Control Names window, while it is open.
     control_names: Option<ControlNamesWindow>,
+    /// The Save Rebind Copy As label box, while it is open.
+    label_prompt: Option<LabelPrompt>,
+    /// The label the box accepted, for the save box shown next.
+    pending_copy_label: Option<String>,
 }
 
 impl CtrlXrefApp {
@@ -358,7 +374,10 @@ impl CtrlXrefApp {
             marked: HashSet::new(),
             rebinds_modified: false,
             undo: UndoStack::default(),
+            save_as_after: None,
             control_names: None,
+            label_prompt: None,
+            pending_copy_label: None,
         }
     }
 
@@ -386,8 +405,9 @@ impl CtrlXrefApp {
             Command::OpenFile => self.open_file(frame),
             Command::OpenCurrentRebindFile => self.open_current_rebind_file(),
             Command::OpenCustomRebindFile => self.open_custom_rebind_file(frame),
+            Command::MergeRebindFile => self.merge_rebind_file(frame),
             Command::SaveRebindFile => self.save_rebind_file(),
-            Command::SaveRebindCopyAs => self.save_rebind_copy_as(frame),
+            Command::SaveRebindCopyAs => self.save_rebind_copy_as(),
             Command::CreateBlankRebindFile => self.create_blank_rebind_file(frame),
             Command::CloseFile => self.unless_unsaved(AfterPrompt::CloseFile),
             Command::Quit => self.ctx.send_viewport_cmd(ViewportCommand::Close),
@@ -396,6 +416,7 @@ impl CtrlXrefApp {
             Command::LocateGameFolder => self.locate_game_folder(frame),
             Command::ExtractDefaults => self.extract_defaults(),
             Command::ShowUnusedCombos => self.show_unused_combos(),
+            Command::ResolveConflicts => self.resolve_conflicts(),
             Command::ShowControlNames => self.show_control_names(),
             Command::AutofillKeyboard => self.autofill_keyboard(),
             Command::ExportCsv => self.export_csv(frame),
@@ -483,6 +504,7 @@ impl CtrlXrefApp {
             rebinds: Rebinds::new(),
             rebind_path: None,
             rebind_root: None,
+            merged: false,
             strings,
             empty_keyboard_rows: 0,
             path,
@@ -547,6 +569,7 @@ impl CtrlXrefApp {
         doc.rebinds = rebinds;
         doc.rebind_path = Some(path);
         doc.rebind_root = Some(root);
+        doc.merged = false;
         self.rebinds_modified = false;
         self.undo = UndoStack::default();
         self.refresh_table();
@@ -564,6 +587,67 @@ impl CtrlXrefApp {
                 list.push_str(&format!(" and {more} more"));
             }
             self.notify(Level::Warning, format!("{note}. Not in the profile: {list}"));
+        }
+    }
+
+    /// Whether Save Rebind File may overwrite the file: not once another file was merged into it.
+    fn can_save(&self) -> bool {
+        !self.document.as_ref().is_some_and(|doc| doc.merged)
+    }
+
+    /// Whether a rebind file is open for another one to be merged into. Opening a profile
+    /// closes the rebind file, so this is false again after that.
+    fn can_merge(&self) -> bool {
+        self.document.as_ref().is_some_and(|doc| doc.rebind_root.is_some())
+    }
+
+    /// Appends the bindings of the rebind file at `path` to the open one, conflicting ones
+    /// included, for the user to choose from in the table. Ctrl+Z takes them out again.
+    fn merge_rebind_path(&mut self, path: &Path) {
+        let other = match xml_doc::load(path) {
+            Ok(other) => other,
+            Err(err) => {
+                self.notify(Level::Error, format!("{err:#}"));
+                return;
+            }
+        };
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(rebind_root) = &mut doc.rebind_root else {
+            return;
+        };
+        let before = rebind_root.clone();
+        let added = merge_rebinds(rebind_root, &other);
+        if added == 0 {
+            self.notify(Level::Info, format!("{} has no bindings to add", path.display()));
+            return;
+        }
+        doc.rebinds = read_rebinds(rebind_root);
+        let first_merge = !std::mem::replace(&mut doc.merged, true);
+        let actions: HashSet<(String, String)> =
+            doc.rows.iter().filter_map(|path| action_key(&doc.root, path)).collect();
+        let unmatched = read_rebinds(&other).keys().filter(|key| !actions.contains(*key)).count();
+        self.undo.push("merging a rebind file".into(), before, self.rebinds_modified);
+        if let Some(step) = self.undo.0.last_mut() {
+            step.first_merge = first_merge;
+        }
+        self.rebinds_modified = true;
+        self.refresh_table();
+        let mut note = format!("Added {added} bindings from {}", path.display());
+        if unmatched > 0 {
+            note.push_str(&format!(", {unmatched} of its actions are not in the profile"));
+        }
+        note.push_str(". Conflicts are shown in red. Use Save Rebind Copy As to keep this");
+        self.notify(Level::Success, note);
+    }
+
+    /// Starts going through the conflicting cells, editing one at a time.
+    fn resolve_conflicts(&mut self) {
+        if self.table.start_resolving() {
+            self.notify(Level::Info, "Delete the controls you don't want. Tab: next, Shift+Tab: previous, Esc: stop");
+        } else {
+            self.notify(Level::Info, "There are no conflicting bindings");
         }
     }
 
@@ -786,15 +870,16 @@ impl CtrlXrefApp {
             );
             return;
         };
-        let inputs = match parse_cell_inputs(device, &edit.value) {
+        let Some((map, action)) = doc.rows.get(edit.source_ix).and_then(|path| action_key(&doc.root, path)) else {
+            return;
+        };
+        let existing = doc.rebinds.get(&(map.clone(), action.clone())).cloned().unwrap_or_default();
+        let inputs = match parse_cell_inputs(device, &edit.value, &existing) {
             Ok(inputs) => inputs,
             Err(message) => {
                 self.notify(Level::Warning, message);
                 return;
             }
-        };
-        let Some((map, action)) = doc.rows.get(edit.source_ix).and_then(|path| action_key(&doc.root, path)) else {
-            return;
         };
         let before = rebind_root.clone();
         set_device_rebinds(rebind_root, &map, &action, device, &inputs);
@@ -852,6 +937,7 @@ impl CtrlXrefApp {
         };
         doc.rebinds = read_rebinds(&step.root);
         doc.rebind_root = Some(step.root);
+        doc.merged &= !step.first_merge;
         self.rebinds_modified = step.modified;
         self.refresh_table();
         self.notify(Level::Info, format!("Undid {}", step.label));
@@ -911,8 +997,27 @@ impl CtrlXrefApp {
         if !self.has_profile() {
             return;
         }
+        if let Some(path) = self.pick_rebind_file("Open Custom Rebind File", frame) {
+            self.unless_unsaved(AfterPrompt::OpenRebind(path));
+        }
+    }
+
+    /// Asks for a rebind file whose bindings are added to the open one. The menu item is
+    /// disabled without an open rebind file.
+    fn merge_rebind_file(&mut self, frame: &eframe::Frame) {
+        if !self.can_merge() {
+            return;
+        }
+        if let Some(path) = self.pick_rebind_file("Merge Rebind File", frame) {
+            self.merge_rebind_path(&path);
+        }
+    }
+
+    /// Shows a file browser for a rebind file, titled `title`, starting in the game's mappings
+    /// folder when it exists.
+    fn pick_rebind_file(&self, title: &str, frame: &eframe::Frame) -> Option<PathBuf> {
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Open Custom Rebind File")
+            .set_title(title)
             .add_filter("XML files", &["xml"])
             .add_filter("All files", &["*"])
             .set_parent(frame);
@@ -923,9 +1028,7 @@ impl CtrlXrefApp {
         if let Some(start) = start {
             dialog = dialog.set_directory(start);
         }
-        if let Some(path) = dialog.pick_file() {
-            self.unless_unsaved(AfterPrompt::OpenRebind(path));
-        }
+        dialog.pick_file()
     }
 
     /// The open rebind file's path, or a warning when there is none.
@@ -948,6 +1051,10 @@ impl CtrlXrefApp {
     /// [`game_dir::CURRENT_REBIND`] gets a warning with Cancel first, since the game rewrites
     /// it whenever controls are changed in the game.
     fn save_rebind_file(&mut self) {
+        if !self.can_save() {
+            self.notify(Level::Warning, "After a merge, use Save Rebind Copy As to choose where to save");
+            return;
+        }
         let Some(path) = self.rebind_path() else {
             return;
         };
@@ -1004,11 +1111,11 @@ impl CtrlXrefApp {
     /// unless that is being asked already.
     fn ask_about_unsaved(&mut self, after: AfterPrompt) {
         let asking = self.dialogs.iter().any(|dialog| {
-            matches!(dialog.confirm, Some((_, _, DialogAction::SaveThen(_))))
+            matches!(dialog.confirm, Some((_, _, DialogAction::SaveThen(_) | DialogAction::SaveAsThen(_))))
         });
         if !asking {
             let path = self.document.as_ref().and_then(|doc| doc.rebind_path.as_deref());
-            let dialog = unsaved_rebinds_warning(path.unwrap_or(Path::new("")), after);
+            let dialog = unsaved_rebinds_warning(path.unwrap_or(Path::new("")), after, !self.can_save());
             self.dialogs.insert(0, dialog);
         }
     }
@@ -1034,13 +1141,26 @@ impl CtrlXrefApp {
 
     /// Saves the rebind file and then does what was asked; if saving fails, says so and stops.
     fn save_then(&mut self, after: AfterPrompt) {
-        let Some(path) = self.rebind_path() else {
-            return;
-        };
+        if let Some(path) = self.rebind_path() {
+            self.write_then(&path, after);
+        }
+    }
+
+    /// Asks where to save the rebind file and then does what was asked. Cancelling the box
+    /// stays in the application with the changes kept.
+    fn save_as_then(&mut self, after: AfterPrompt, frame: &eframe::Frame) {
+        if let Some(path) = self.pick_copy_path("Save Rebind File As", frame) {
+            self.write_then(&path, after);
+        }
+    }
+
+    /// Writes the open rebind file to `path` and does what was asked; if that fails, says so and
+    /// stops.
+    fn write_then(&mut self, path: &Path, after: AfterPrompt) {
         let Some(root) = self.document.as_ref().and_then(|doc| doc.rebind_root.as_ref()) else {
             return;
         };
-        match xml_doc::save(root, &path) {
+        match xml_doc::save(root, path) {
             Ok(()) => {
                 self.rebinds_modified = false;
                 self.undo.mark_saved();
@@ -1050,14 +1170,50 @@ impl CtrlXrefApp {
         }
     }
 
-    /// Writes the rebind file to a new path, as a backup or a copy to edit later. The open
-    /// rebind file stays the one Save Rebind File writes.
-    fn save_rebind_copy_as(&mut self, frame: &eframe::Frame) {
-        let Some(rebind_path) = self.rebind_path() else {
+    /// Starts writing the rebind file to a new path, as a backup or a copy to edit later, by
+    /// asking for the copy's header label, which names it in the game's list of control
+    /// profiles; [`Self::save_rebind_copy_with_label`] goes on. The open rebind file stays the
+    /// one Save Rebind File writes.
+    fn save_rebind_copy_as(&mut self) {
+        let Some(path) = self.rebind_path() else {
             return;
         };
+        // Files in the game's profile format have no label; their file name stands in.
+        let label = self
+            .document
+            .as_ref()
+            .and_then(|doc| doc.rebind_root.as_ref())
+            .and_then(header_label)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let stem = path.file_stem().map(|stem| stem.to_string_lossy()).unwrap_or_default();
+                stem.trim().chars().take(MAX_HEADER_LABEL).collect()
+            });
+        self.label_prompt = Some(LabelPrompt { text: label, focus: true });
+    }
+
+    /// Asks where to save the copy and writes it there with `label` in its header; the open
+    /// rebind file is not changed.
+    fn save_rebind_copy_with_label(&mut self, label: &str, frame: &eframe::Frame) {
+        let Some(path) = self.pick_copy_path("Save Rebind Copy As", frame) else {
+            return;
+        };
+        let Some(mut root) = self.document.as_ref().and_then(|doc| doc.rebind_root.clone()) else {
+            return;
+        };
+        set_header_label(&mut root, label);
+        match xml_doc::save(&root, &path) {
+            Ok(()) => self.dialogs.push(Dialog::saved(format!("Saved copy to {}", path.display()), &path)),
+            Err(err) => self.notify(Level::Error, format!("{err:#}")),
+        }
+    }
+
+    /// Asks where to save a copy of the open rebind file, suggesting its folder and its name
+    /// with `_copy` added; a warning when no rebind file is open.
+    fn pick_copy_path(&mut self, title: &str, frame: &eframe::Frame) -> Option<PathBuf> {
+        let rebind_path = self.rebind_path()?;
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Save Rebind Copy As")
+            .set_title(title)
             .add_filter("XML files", &["xml"])
             .add_filter("All files", &["*"])
             .set_parent(frame);
@@ -1067,16 +1223,7 @@ impl CtrlXrefApp {
         if let Some(stem) = rebind_path.file_stem() {
             dialog = dialog.set_file_name(format!("{}_copy.xml", stem.to_string_lossy()));
         }
-        let Some(path) = dialog.save_file() else {
-            return;
-        };
-        let Some(root) = self.document.as_ref().and_then(|doc| doc.rebind_root.as_ref()) else {
-            return;
-        };
-        match xml_doc::save(root, &path) {
-            Ok(()) => self.dialogs.push(Dialog::saved(format!("Saved copy to {}", path.display()), &path)),
-            Err(err) => self.notify(Level::Error, format!("{err:#}")),
-        }
+        dialog.save_file()
     }
 
     /// Writes a rebind file that clears every binding of the open profile: the game's
@@ -1566,6 +1713,7 @@ impl CtrlXrefApp {
                 }
             }
             DialogAction::SaveThen(after) => self.save_then(after),
+            DialogAction::SaveAsThen(after) => self.save_as_after = Some(after),
             DialogAction::DiscardThen(after) => self.proceed(after),
         }
     }
@@ -1573,7 +1721,8 @@ impl CtrlXrefApp {
     fn menu_bar(&mut self, ui: &mut egui::Ui) -> Option<Command> {
         let mut picked = None;
         egui::MenuBar::new().ui(ui, |ui| {
-            picked = menus::menu_items(ui, self.theme, can_extract(self.game_dir.as_deref()));
+            let can_extract = can_extract(self.game_dir.as_deref());
+            picked = menus::menu_items(ui, self.theme, can_extract, self.can_merge(), self.can_save());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let icon = if ui.visuals().dark_mode { "☀" } else { "🌙" };
                 if ui.button(icon).on_hover_text("Toggle light / dark theme").clicked() {
@@ -1662,6 +1811,9 @@ impl CtrlXrefApp {
         let out = self.table.show(ui, selected, scroll_to);
         if self.table.take_marks_cleared() {
             self.clear_tree_marks();
+        }
+        if out.conflicts_resolved {
+            self.notify(Level::Success, "No conflicting bindings are left. Save to keep this");
         }
         if let Some(column) = &out.clear_column {
             self.clear_column(column);
@@ -1764,6 +1916,75 @@ impl CtrlXrefApp {
         }
         if let Some(action) = action {
             self.run_dialog_action(action);
+        }
+    }
+
+    /// Shows the Save Rebind Copy As label box: the label starts selected, and a blank one or
+    /// one longer than [`MAX_HEADER_LABEL`] characters cannot be saved. Enter saves, Escape
+    /// cancels.
+    fn label_prompt(&mut self, ctx: &Context) {
+        if !self.dialogs.is_empty() {
+            return;
+        }
+        let Some(prompt) = &mut self.label_prompt else {
+            return;
+        };
+        let mut close = false;
+        let mut accepted = None;
+        let response = egui::Modal::new(Id::unique("copy label")).show(ctx, |ui| {
+            ui.set_width(420.);
+            ui.heading("Copy Label");
+            ui.add_space(8.);
+            ui.label(format!(
+                "The name shown in the game's list of control profiles (1-{MAX_HEADER_LABEL} characters)."
+            ));
+            ui.add_space(8.);
+            let error = header_label_error(&prompt.text);
+            let mut output = TextEdit::singleline(&mut prompt.text)
+                .id_salt("copy label text")
+                .char_limit(MAX_HEADER_LABEL)
+                .desired_width(f32::INFINITY)
+                .show(ui);
+            let id = output.response.response.id;
+            // The modal's first frame only measures it, invisibly, and takes no focus; select
+            // the label on the first frame it is shown.
+            if prompt.focus && !ui.is_sizing_pass() {
+                prompt.focus = false;
+                output.response.response.request_focus();
+                let all = CCursorRange::two(CCursor::new(0), CCursor::new(prompt.text.chars().count()));
+                output.state.cursor.set_char_range(Some(all));
+                output.state.store(ui.ctx(), id);
+            }
+            let entered = output.response.response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            ui.horizontal(|ui| {
+                match error {
+                    Some(error) => ui.label(RichText::new(error).color(ui.visuals().warn_fg_color)),
+                    None => ui.label(""),
+                };
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(format!("{}/{MAX_HEADER_LABEL}", prompt.text.trim().chars().count())).weak());
+                });
+            });
+            ui.add_space(12.);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let save = ui.add_enabled(error.is_none(), egui::Button::new("Save Copy..."));
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+                if error.is_none() && (save.clicked() || entered) {
+                    accepted = Some(prompt.text.trim().to_string());
+                    close = true;
+                } else if entered {
+                    // Keep typing after Enter on a label that cannot be saved.
+                    output.response.response.request_focus();
+                }
+            });
+        });
+        if close || response.should_close() {
+            self.label_prompt = None;
+        }
+        if accepted.is_some() {
+            self.pending_copy_label = accepted;
         }
     }
 
@@ -1871,11 +2092,18 @@ impl eframe::App for CtrlXrefApp {
 
         self.search_dialog(&ctx);
         self.dialog(&ctx);
+        self.label_prompt(&ctx);
         self.toasts(&ctx);
         self.help_windows(&ctx);
         self.control_names_window(&ctx);
         if let Some(command) = command {
             self.run(command, frame);
+        }
+        if let Some(after) = self.save_as_after.take() {
+            self.save_as_then(after, frame);
+        }
+        if let Some(label) = self.pending_copy_label.take() {
+            self.save_rebind_copy_with_label(&label, frame);
         }
     }
 }
@@ -1924,8 +2152,9 @@ fn is_current_rebind(path: &Path) -> bool {
 }
 
 /// Asks what to do with the changes to the rebind file at `path` before doing `after`. The game's
-/// own current rebind file gets the warning that saving it has.
-fn unsaved_rebinds_warning(path: &Path, after: AfterPrompt) -> Dialog {
+/// own current rebind file gets the warning that saving it has. Exiting offers Save As, since it is
+/// not always clear which file is open, and so does everything after a `merged` file.
+fn unsaved_rebinds_warning(path: &Path, after: AfterPrompt, merged: bool) -> Dialog {
     let mut message = format!("The rebindings have been modified but not saved:\n{}", path.display());
     if is_current_rebind(path) {
         message.push_str(
@@ -1936,7 +2165,11 @@ fn unsaved_rebinds_warning(path: &Path, after: AfterPrompt) -> Dialog {
     message.push_str(&format!("\n\nSave them before {}?", after.question()));
     let mut dialog = Dialog::warning("Unsaved rebindings", message);
     dialog.extra = Some((after.discard_label(), DialogAction::DiscardThen(after.clone())));
-    dialog.confirm = Some(("Save", "Cancel", DialogAction::SaveThen(after)));
+    dialog.confirm = Some(if merged || after == AfterPrompt::Exit {
+        ("Save As...", "Cancel", DialogAction::SaveAsThen(after))
+    } else {
+        ("Save", "Cancel", DialogAction::SaveThen(after))
+    });
     dialog
 }
 
@@ -2005,50 +2238,8 @@ fn highlighted(ui: &egui::Ui, message: &str, phrase: &str) -> egui::text::Layout
 
 pub(super) fn panel_header(ui: &mut egui::Ui, title: String) {
     ui.add_space(2.);
-    let text = if ui.visuals().dark_mode { theme::heading_text(&title) } else { RichText::new(title).strong() };
-    ui.label(text);
+    ui.label(theme::heading_text(&title));
     ui.separator();
-}
-
-/// Element index paths of all `actionmap` elements, in document order. Actionmaps
-/// nested in another actionmap are not searched for.
-fn find_actionmaps(root: &Element) -> Vec<Vec<usize>> {
-    fn walk(element: &Element, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
-        if element.name == ACTIONMAP_TAG {
-            out.push(path.clone());
-            return;
-        }
-        for (ix, child) in xml_doc::child_elements(element).enumerate() {
-            path.push(ix);
-            walk(child, path, out);
-            path.pop();
-        }
-    }
-    let mut out = Vec::new();
-    walk(root, &mut Vec::new(), &mut out);
-    out
-}
-
-/// Paths of the child elements of every actionmap in `maps`: the table rows.
-fn action_paths(root: &Element, maps: &[Vec<usize>]) -> Vec<Vec<usize>> {
-    maps.iter()
-        .filter_map(|map| Some((map, xml_doc::element_at(root, map)?)))
-        .flat_map(|(map, element)| {
-            (0..xml_doc::child_elements(element).count()).map(move |ix| {
-                let mut path = map.clone();
-                path.push(ix);
-                path
-            })
-        })
-        .collect()
-}
-
-/// `(actionmap name, action name)` of the action at `path`, the key rebinds match on.
-fn action_key(root: &Element, path: &[usize]) -> Option<(String, String)> {
-    let map = xml_doc::element_at(root, path.split_last()?.1)?;
-    let action = xml_doc::element_at(root, path)?;
-    let name = |element: &Element| element.attributes.get("name").cloned().unwrap_or_default();
-    Some((name(map), name(action)))
 }
 
 /// The actionmaps at their tree positions as JSON: `{"actionmaps": [{name, UILabel, actions}]}`,
@@ -2205,386 +2396,6 @@ fn category_labels(root: &Element, strings: &Strings) -> HashMap<String, String>
     out
 }
 
-/// The profile's `device` input of `action`: its attribute, else its child element's.
-fn profile_input(action: &Element, device: &str) -> Option<String> {
-    match action.attributes.get(device) {
-        Some(value) => Some(value.clone()),
-        None => child_device_input(action, device),
-    }
-}
-
-/// How many actions in `rows` have no keyboard input once `rebinds` are applied.
-fn count_empty_keyboard(root: &Element, rows: &[Vec<usize>], rebinds: &Rebinds) -> usize {
-    rows.iter().filter(|path| has_empty_keyboard(root, path, rebinds)).count()
-}
-
-/// Whether the action at `path` has no keyboard input. Its keyboard rebinds replace the
-/// profile's binding; a blank binding like `keyboard=" "` or only empty rebinds like
-/// `kb1_ ` bind nothing.
-fn has_empty_keyboard(root: &Element, path: &[usize], rebinds: &Rebinds) -> bool {
-    let Some(action) = xml_doc::element_at(root, path) else {
-        return false;
-    };
-    let rebound: Vec<String> = action_key(root, path)
-        .and_then(|key| rebinds.get(&key))
-        .map(|inputs| inputs.iter().filter(|input| rebind_device(input) == Some(DEVICES[0])).cloned().collect())
-        .unwrap_or_default();
-    let value = if rebound.is_empty() {
-        profile_input(action, DEVICES[0]).unwrap_or_default()
-    } else {
-        rebound.join(",")
-    };
-    !value.split(',').map(str::trim).any(|input| !input.is_empty() && !is_empty_rebind(input))
-}
-
-/// `(actionmap name, action name)` of each action in `rows`, in order, that has no
-/// keyboard input once `rebinds` are applied.
-fn unbound_keyboard_actions(root: &Element, rows: &[Vec<usize>], rebinds: &Rebinds) -> Vec<(String, String)> {
-    rows.iter()
-        .filter(|path| has_empty_keyboard(root, path, rebinds))
-        .filter_map(|path| action_key(root, path))
-        .collect()
-}
-
-/// The `<action>` named `action` in actionmap `map` of a rebind file, creating the action
-/// and the actionmap when the file has none yet.
-fn action_mut<'a>(root: &'a mut Element, map: &str, action: &str) -> &'a mut Element {
-    if find_named_mut(root, ACTIONMAP_TAG, map).is_none() {
-        let parent = actionmap_parent_mut(root);
-        parent.children.push(XMLNode::Element(named_element(ACTIONMAP_TAG, map)));
-    }
-    let map_element = find_named_mut(root, ACTIONMAP_TAG, map).expect("the actionmap exists or was just added");
-    match map_element
-        .children
-        .iter()
-        .position(|node| node.as_element().is_some_and(|child| is_named(child, "action", action)))
-    {
-        Some(ix) => map_element.children[ix].as_mut_element().expect("an element"),
-        None => {
-            map_element.children.push(XMLNode::Element(named_element("action", action)));
-            map_element.children.last_mut().and_then(XMLNode::as_mut_element).expect("an element")
-        }
-    }
-}
-
-/// The rebind input prefix a device column's inputs get when typed without one: the
-/// device's code and its first instance.
-fn device_prefix(device: &str) -> &'static str {
-    match device {
-        "keyboard" => "kb1_",
-        "mouse" => "mo1_",
-        "joystick" => "js1_",
-        "gamepad" => "gp1_",
-        _ => "",
-    }
-}
-
-/// The device of an input that starts with a device prefix, like `kb1_w` or `js2_button3`.
-fn prefixed_device(input: &str) -> Option<&'static str> {
-    let (head, _) = input.split_once('_')?;
-    let instance = head.get(2..)?;
-    if instance.is_empty() || !instance.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    rebind_device(head)
-}
-
-/// The rebind inputs typed into a `device` column cell: separated by commas or vertical
-/// bars (as [`BINDING_SEPARATOR`] shows them), trimmed, blanks dropped, and given the
-/// column's [`device_prefix`] when they have none. An input prefixed for another device is
-/// an error.
-fn parse_cell_inputs(device: &str, text: &str) -> Result<Vec<String>, String> {
-    text.split([',', '|'])
-        .map(str::trim)
-        .filter(|input| !input.is_empty())
-        .map(|input| match prefixed_device(input) {
-            Some(found) if found == device => Ok(input.to_string()),
-            Some(found) => Err(format!("\"{input}\" is a {found} input and can't go in the {device} column")),
-            None => Ok(format!("{}{input}", device_prefix(device))),
-        })
-        .collect()
-}
-
-/// Makes `inputs` the `device` rebinds of `action` in actionmap `map` of a rebind file, one
-/// `<rebind>` each in that order, where its old `device` rebinds were. A rebind kept from
-/// before keeps its other attributes. Creates the action and the actionmap when needed, and
-/// removes the action when clearing leaves it empty.
-fn set_device_rebinds(root: &mut Element, map: &str, action: &str, device: &str, inputs: &[String]) {
-    let is_device_rebind = |node: &XMLNode| {
-        node.as_element().is_some_and(|child| {
-            child.name == REBIND_TAG && rebind_input(child).is_some_and(|input| rebind_device(&input) == Some(device))
-        })
-    };
-    let exists = find_named_mut(root, ACTIONMAP_TAG, map).is_some_and(|map_element| {
-        xml_doc::child_elements(map_element).any(|child| is_named(child, "action", action))
-    });
-    if inputs.is_empty() && !exists {
-        return;
-    }
-    let action_element = action_mut(root, map, action);
-    let at = action_element.children.iter().position(is_device_rebind);
-    let mut old: Vec<Element> = Vec::new();
-    action_element.children.retain(|node| match node.as_element() {
-        Some(child) if is_device_rebind(node) => {
-            old.push(child.clone());
-            false
-        }
-        _ => true,
-    });
-    let new: Vec<XMLNode> = inputs
-        .iter()
-        .map(|input| {
-            let kept = old.iter().position(|rebind| rebind_input(rebind).as_ref() == Some(input));
-            XMLNode::Element(match kept {
-                Some(ix) => old.remove(ix),
-                None => {
-                    let mut rebind = Element::new(REBIND_TAG);
-                    rebind.attributes.insert("input".into(), input.clone());
-                    rebind
-                }
-            })
-        })
-        .collect();
-    let at = at.unwrap_or(action_element.children.len());
-    action_element.children.splice(at..at, new);
-
-    if xml_doc::child_elements(action_element).next().is_none()
-        && let Some(map_element) = find_named_mut(root, ACTIONMAP_TAG, map)
-    {
-        map_element
-            .children
-            .retain(|node| !node.as_element().is_some_and(|child| is_named(child, "action", action)));
-    }
-}
-
-/// Removes all `device` rebinds of `actions` (`(actionmap name, action name)`) from a rebind file
-/// whose inputs are `rebinds`. Returns how many there were. Rebinds of actions not listed stay.
-fn clear_device_rebinds(root: &mut Element, rebinds: &Rebinds, actions: &[(String, String)], device: &str) -> usize {
-    let mut cleared = 0;
-    for key in actions {
-        let of_device = rebinds
-            .get(key)
-            .map_or(0, |inputs| inputs.iter().filter(|input| rebind_device(input) == Some(device)).count());
-        if of_device > 0 {
-            set_device_rebinds(root, &key.0, &key.1, device, &[]);
-            cleared += of_device;
-        }
-    }
-    cleared
-}
-
-/// Binds `input` (a `kb...` keyboard input) to `action` of actionmap `map` in a rebind
-/// file: fills its empty keyboard rebind, or adds a `<rebind>`, creating the action and
-/// the actionmap when the file has none yet.
-fn set_keyboard_rebind(root: &mut Element, map: &str, action: &str, input: &str) {
-    let action_element = action_mut(root, map, action);
-    let empty_keyboard = action_element.children.iter_mut().filter_map(XMLNode::as_mut_element).find(|child| {
-        child.name == REBIND_TAG
-            && rebind_input(child).is_some_and(|value| rebind_device(&value) == Some(DEVICES[0]) && is_empty_rebind(&value))
-    });
-    match empty_keyboard {
-        Some(rebind) => {
-            rebind.attributes.insert("input".into(), input.into());
-        }
-        None => {
-            let mut rebind = Element::new(REBIND_TAG);
-            rebind.attributes.insert("input".into(), input.into());
-            action_element.children.push(XMLNode::Element(rebind));
-        }
-    }
-}
-
-fn is_named(element: &Element, tag: &str, name: &str) -> bool {
-    element.name == tag && element.attributes.get("name").is_some_and(|value| value == name)
-}
-
-/// Makes the blank layout `root` hold exactly `actions` (`(actionmap name, action name)`, in
-/// profile order), since the profile is more up to date than the layout. Each action the
-/// layout lacks is added with blank rebinds like the layout's own actions have: one per
-/// device its first action clears, keeping only `device` and `input`. Missing actionmaps are
-/// added after the existing ones. Layout actions not in `actions` are removed, and so are
-/// actionmaps left without actions. Everything else, its `CustomisationUIHeader` with
-/// `Devices` and its `modifiers` included, is kept as it is. Returns how many actions were
-/// added and removed.
-fn complete_blank_layout(root: &mut Element, actions: &[(String, String)]) -> (usize, usize) {
-    let blank = blank_rebinds(root);
-    let mut added = 0;
-    for (map, action) in actions {
-        let exists = find_named_mut(root, ACTIONMAP_TAG, map)
-            .is_some_and(|map_element| xml_doc::child_elements(map_element).any(|child| is_named(child, "action", action)));
-        if !exists {
-            action_mut(root, map, action).children = blank.iter().cloned().map(XMLNode::Element).collect();
-            added += 1;
-        }
-    }
-    let keep: HashSet<(&str, &str)> = actions.iter().map(|(map, action)| (map.as_str(), action.as_str())).collect();
-    let removed = remove_actions_not_in(root, &keep);
-    (added, removed)
-}
-
-/// Removes from `element` and its descendants every action whose `(actionmap name, action
-/// name)` is not in `keep`, then every actionmap left without actions. Returns how many
-/// actions were removed.
-fn remove_actions_not_in(element: &mut Element, keep: &HashSet<(&str, &str)>) -> usize {
-    let mut removed = 0;
-    if element.name == ACTIONMAP_TAG {
-        let map = element.attributes.get("name").cloned().unwrap_or_default();
-        element.children.retain(|node| {
-            let stale = node.as_element().is_some_and(|child| {
-                child.name == "action"
-                    && !keep.contains(&(map.as_str(), child.attributes.get("name").map_or("", String::as_str)))
-            });
-            removed += usize::from(stale);
-            !stale
-        });
-        return removed;
-    }
-    for child in element.children.iter_mut().filter_map(XMLNode::as_mut_element) {
-        removed += remove_actions_not_in(child, keep);
-    }
-    element.children.retain(|node| {
-        node.as_element().is_none_or(|child| {
-            child.name != ACTIONMAP_TAG || xml_doc::child_elements(child).any(|action| action.name == "action")
-        })
-    });
-    removed
-}
-
-/// The blank `<rebind>` elements for a new action of a blank layout: those of its first
-/// action that has rebinds, with only `device` and `input`. Without one, a blank rebind
-/// for the keyboard, mouse, gamepad and first joystick.
-fn blank_rebinds(root: &Element) -> Vec<Element> {
-    fn first_rebinds(element: &Element) -> Option<Vec<&Element>> {
-        if element.name == "action" {
-            let rebinds: Vec<&Element> = xml_doc::child_elements(element).filter(|c| c.name == REBIND_TAG).collect();
-            return (!rebinds.is_empty()).then_some(rebinds);
-        }
-        xml_doc::child_elements(element).find_map(first_rebinds)
-    }
-    let rebind = |device: &str, input: &str| {
-        let mut element = Element::new(REBIND_TAG);
-        element.attributes.insert("device".into(), device.into());
-        element.attributes.insert("input".into(), input.into());
-        element
-    };
-    match first_rebinds(root) {
-        Some(rebinds) => rebinds
-            .into_iter()
-            .map(|template| {
-                let attribute = |name: &str| template.attributes.get(name).map_or("", String::as_str);
-                rebind(attribute("device"), attribute("input"))
-            })
-            .collect(),
-        None => vec![
-            rebind("gamepad", " "),
-            rebind("keyboard", " "),
-            rebind("mouse", " "),
-            rebind("joystick", "js1_ "),
-        ],
-    }
-}
-
-fn named_element(tag: &str, name: &str) -> Element {
-    let mut element = Element::new(tag);
-    element.attributes.insert("name".into(), name.into());
-    element
-}
-
-/// The first `tag` element named `name` in `element` or its descendants.
-fn find_named_mut<'a>(element: &'a mut Element, tag: &str, name: &str) -> Option<&'a mut Element> {
-    if is_named(element, tag, name) {
-        return Some(element);
-    }
-    element
-        .children
-        .iter_mut()
-        .filter_map(XMLNode::as_mut_element)
-        .find_map(|child| find_named_mut(child, tag, name))
-}
-
-/// Where new actionmaps go in a rebind file: next to its existing ones, else into its
-/// `<ActionProfiles>` element, else into the root.
-fn actionmap_parent_mut(root: &mut Element) -> &mut Element {
-    fn holds_actionmap(element: &Element) -> bool {
-        xml_doc::child_elements(element).any(|child| child.name == ACTIONMAP_TAG)
-            || xml_doc::child_elements(element).any(holds_actionmap)
-    }
-    fn find(element: &mut Element) -> &mut Element {
-        if xml_doc::child_elements(element).any(|child| child.name == ACTIONMAP_TAG) {
-            return element;
-        }
-        let ix = element
-            .children
-            .iter()
-            .position(|node| node.as_element().is_some_and(holds_actionmap));
-        match ix {
-            Some(ix) => find(element.children[ix].as_mut_element().expect("an element")),
-            None => element,
-        }
-    }
-    if holds_actionmap(root) {
-        return find(root);
-    }
-    let profiles = root
-        .children
-        .iter()
-        .position(|node| node.as_element().is_some_and(|child| child.name == "ActionProfiles"));
-    match profiles {
-        Some(ix) => root.children[ix].as_mut_element().expect("an element"),
-        None => root,
-    }
-}
-
-/// The device column of a rebind input, from its prefix: `kb` keyboard, `mo` mouse,
-/// `js` joystick and `gp` gamepad.
-fn rebind_device(input: &str) -> Option<&'static str> {
-    match input.get(..2)? {
-        "kb" => Some(DEVICES[0]),
-        "mo" => Some(DEVICES[1]),
-        "js" => Some(DEVICES[2]),
-        "gp" => Some(DEVICES[3]),
-        _ => None,
-    }
-}
-
-/// Whether `input` names a device but no input, like `kb1_ ` or `js2_`. The game leaves
-/// these behind once a binding has been edited, as it cannot remove the element.
-fn is_empty_rebind(input: &str) -> bool {
-    input.split_once('_').is_some_and(|(_, rest)| rest.trim().is_empty())
-}
-
-/// The input of a `<rebind>` element, with a device prefix. The game's blank layout writes
-/// some without one, like `<rebind device="keyboard" input=" "/>`; those get the prefix of
-/// their `device` attribute, so that one reads as the empty rebind `kb1_ `.
-fn rebind_input(rebind: &Element) -> Option<String> {
-    let input = rebind.attributes.get("input")?;
-    if rebind_device(input).is_some() {
-        return Some(input.clone());
-    }
-    let device = rebind.attributes.get("device").map(|device| device.to_ascii_lowercase());
-    let device = match device.as_deref() {
-        Some("xboxpad") => DEVICES[3],
-        Some(device) => DEVICES.into_iter().find(|known| *known == device)?,
-        None => return Some(input.clone()),
-    };
-    let input = input.trim();
-    Some(format!("{}{}", device_prefix(device), if input.is_empty() { " " } else { input }))
-}
-
-/// The input of a device bound in a child element instead of an attribute: either
-/// `<gamepad input="..."/>` or several `<keyboard><inputdata input="..."/></keyboard>`.
-fn child_device_input(action: &Element, device: &str) -> Option<String> {
-    let element = xml_doc::child_elements(action).find(|child| child.name == device)?;
-    if let Some(input) = element.attributes.get("input") {
-        return Some(input.clone());
-    }
-    let inputs: Vec<&str> = xml_doc::child_elements(element)
-        .filter_map(|data| data.attributes.get("input"))
-        .map(String::as_str)
-        .collect();
-    (!inputs.is_empty()).then(|| inputs.join(", "))
-}
-
 /// Where to find the localization file for the profile at `profile`: the first existing
 /// [`strings_candidates`] file, searching `xml\` under the working directory and the
 /// executable's directory last.
@@ -2617,28 +2428,6 @@ fn strings_candidates(profile: &Path, game_dir: Option<&Path>) -> Vec<PathBuf> {
     .into_iter()
     .flatten()
     .collect()
-}
-
-/// The `<rebind input="..."/>` inputs of every action in a rebind file's actionmaps, as
-/// [`rebind_input`] reads them.
-fn read_rebinds(root: &Element) -> Rebinds {
-    let mut rebinds = Rebinds::new();
-    for path in find_actionmaps(root) {
-        let Some(map) = xml_doc::element_at(root, &path) else {
-            continue;
-        };
-        let map_name = map.attributes.get("name").cloned().unwrap_or_default();
-        for action in xml_doc::child_elements(map) {
-            let inputs: Vec<String> = xml_doc::child_elements(action)
-                .filter(|child| child.name == REBIND_TAG)
-                .filter_map(rebind_input)
-                .collect();
-            if let (false, Some(name)) = (inputs.is_empty(), action.attributes.get("name")) {
-                rebinds.insert((map_name.clone(), name.clone()), inputs);
-            }
-        }
-    }
-    rebinds
 }
 
 /// A collapsed tree node for the actionmap at `path` with one leaf per child element.
@@ -2736,11 +2525,9 @@ fn count_elements(element: &Element) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIONMAP_TAG, AfterPrompt, DialogAction, CellStyle, DEFAULT_COLUMN, DEVICES, Rebinds, TableRow, action_key, actionmap_tree, complete_blank_layout, action_paths, actionmap_item, count_elements, readable_name,
-        count_empty_keyboard,
-        find_actionmaps, is_current_rebind, parse_cell_inputs, parse_tree_id, read_rebinds, set_device_rebinds,
-        set_keyboard_rebind, strings_candidates,
-        unbound_keyboard_actions,
+        AfterPrompt, DialogAction, CellStyle, DEFAULT_COLUMN, DEVICES, Rebinds, TableRow, action_key, actionmap_tree, action_paths, actionmap_item, count_elements, readable_name,
+        find_actionmaps, is_current_rebind, parse_tree_id, read_rebinds,
+        strings_candidates,
         table_rows, tree_id, xml_doc,
     };
     use ctrlxref::localization::Strings;
@@ -2951,7 +2738,7 @@ mod tests {
     /// What the question about unsaved rebinds, if it is up, is going to do once answered.
     fn asked(app: &super::CtrlXrefApp) -> Option<AfterPrompt> {
         match app.dialogs.first().and_then(|dialog| dialog.confirm.as_ref()) {
-            Some((_, _, DialogAction::SaveThen(after))) => Some(after.clone()),
+            Some((_, _, DialogAction::SaveThen(after) | DialogAction::SaveAsThen(after))) => Some(after.clone()),
             _ => None,
         }
     }
@@ -3045,6 +2832,108 @@ mod tests {
         assert_eq!(rebinds_of(&app), start);
         assert!(!app.rebinds_modified);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn merging_adds_to_the_open_file_and_undo_takes_it_out() {
+        let (mut app, dir, rebind) = app_with_rebinds("merge");
+        let other = dir.join("other.xml");
+        std::fs::write(&other, r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_y"/></action></actionmap></ActionMaps>"#)
+            .unwrap();
+        app.merge_rebind_path(&other);
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "a: kb1_y"]);
+        assert!(app.rebinds_modified);
+        // The rebind file stays the one that saving writes.
+        assert_eq!(app.document.as_ref().unwrap().rebind_path.as_ref(), Some(&rebind));
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), ["a: kb1_x"]);
+        assert!(!app.rebinds_modified);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `app` with a file holding another binding of action `a` merged into its rebind file.
+    fn merge_other(app: &mut super::CtrlXrefApp, dir: &Path, input: &str) {
+        let other = dir.join("other.xml");
+        let xml = format!(r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="{input}"/></action></actionmap></ActionMaps>"#);
+        std::fs::write(&other, xml).unwrap();
+        app.merge_rebind_path(&other);
+    }
+
+    #[test]
+    fn a_merge_turns_save_off_until_it_is_undone_or_another_file_is_opened() {
+        let (mut app, dir, rebind) = app_with_rebinds("merge-save");
+        assert!(app.can_save());
+        merge_other(&mut app, &dir, "kb1_y");
+        merge_other(&mut app, &dir, "kb1_z");
+        assert!(!app.can_save());
+
+        // Not even with Ctrl+S, whose command doesn't go through the menu.
+        app.save_rebind_file();
+        assert!(app.dialogs.is_empty());
+        assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
+
+        // The first merge has to be undone too.
+        app.undo_change();
+        assert!(!app.can_save());
+        app.undo_change();
+        assert!(app.can_save());
+
+        merge_other(&mut app, &dir, "kb1_y");
+        assert!(!app.can_save());
+        app.open_rebind_path(rebind);
+        assert!(app.can_save());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn merging_nothing_new_leaves_save_on() {
+        let (mut app, dir, _) = app_with_rebinds("merge-nothing");
+        merge_other(&mut app, &dir, "kb1_x");
+        assert!(app.can_save());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn after_a_merge_every_question_offers_save_as() {
+        let (mut app, dir, _) = app_with_rebinds("merge-question");
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        app.unless_unsaved(AfterPrompt::CloseFile);
+        assert!(matches!(app.dialogs[0].confirm, Some(("Save", _, DialogAction::SaveThen(_)))));
+        app.dialogs.clear();
+        merge_other(&mut app, &dir, "kb1_z");
+        app.unless_unsaved(AfterPrompt::CloseFile);
+        assert!(matches!(app.dialogs[0].confirm, Some(("Save As...", _, DialogAction::SaveAsThen(_)))));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_cell_edit_cleans_up_the_text_and_keeps_the_prefix() {
+        let (mut app, dir, _) = app_with_rebinds("clean-edit");
+        edit(&mut app, 1, "joystick", "js3_button1 | js3_button2");
+        // The second control's prefix got damaged and a separator was left behind.
+        edit(&mut app, 1, "joystick", "js3_button1 | s3_button2 |");
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: js3_button1", "b: js3_button2"]);
+        edit(&mut app, 1, "joystick", "| js3_button2");
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: js3_button2"]);
+        // What can't be made valid warns and changes nothing.
+        edit(&mut app, 1, "joystick", "js3");
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: js3_button2"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn merging_is_possible_only_with_an_open_rebind_file() {
+        let (mut app, dir, _) = app_with_rebinds("can-merge");
+        assert!(app.can_merge());
+        app.open_path(dir.join("profile.xml"));
+        assert!(!app.can_merge());
+        app.open_rebind_path(dir.join("missing.xml"));
+        assert!(!app.can_merge());
+        app.open_rebind_path(dir.join("rebinds.xml"));
+        assert!(app.can_merge());
+        app.close_file();
+        assert!(!app.can_merge());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -3258,7 +3147,7 @@ mod tests {
         edit(&mut app, 0, "keyboard", "kb1_y");
         assert!(close_asks(&mut app));
         let dialog = &app.dialogs[0];
-        assert_eq!(dialog.confirm.as_ref().map(|(ok, cancel, _)| (*ok, *cancel)), Some(("Save", "Cancel")));
+        assert_eq!(dialog.confirm.as_ref().map(|(ok, cancel, _)| (*ok, *cancel)), Some(("Save As...", "Cancel")));
         assert_eq!(dialog.extra.as_ref().map(|(label, _)| *label), Some("Exit Without Saving"));
 
         // Without saving: the file stays as it was, and the next close request goes through.
@@ -3266,12 +3155,17 @@ mod tests {
         assert!(!app.rebinds_modified);
         assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
 
-        // Saving: the file has the change, and no other message box gets in the way of exiting.
+        // Save As: the box is asked for, the chosen file has the change, the open one doesn't,
+        // and no other message box gets in the way of exiting.
         app.dialogs.clear();
         edit(&mut app, 0, "keyboard", "kb1_z");
-        app.run_dialog_action(DialogAction::SaveThen(AfterPrompt::Exit));
+        app.run_dialog_action(DialogAction::SaveAsThen(AfterPrompt::Exit));
+        assert_eq!(app.save_as_after.take(), Some(AfterPrompt::Exit));
+        let chosen = dir.join("chosen.xml");
+        app.write_then(&chosen, AfterPrompt::Exit);
         assert!(!app.rebinds_modified);
-        assert!(std::fs::read_to_string(&rebind).unwrap().contains("kb1_z"));
+        assert!(std::fs::read_to_string(&chosen).unwrap().contains("kb1_z"));
+        assert!(!std::fs::read_to_string(&rebind).unwrap().contains("kb1_z"));
         assert!(app.dialogs.is_empty());
         std::fs::remove_dir_all(dir).ok();
     }
@@ -3280,9 +3174,9 @@ mod tests {
     #[test]
     fn the_exit_question_warns_about_the_games_own_file() {
         let own =
-            super::unsaved_rebinds_warning(Path::new(r"C:\SC\LIVE\USER\Client\0\Profiles\default\actionmaps.xml"), AfterPrompt::Exit);
+            super::unsaved_rebinds_warning(Path::new(r"C:\SC\LIVE\USER\Client\0\Profiles\default\actionmaps.xml"), AfterPrompt::Exit, false);
         assert!(own.message.contains("overwritten by the game engine"));
-        let other = super::unsaved_rebinds_warning(Path::new(r"C:\SC\mappings\layout.xml"), AfterPrompt::CloseFile);
+        let other = super::unsaved_rebinds_warning(Path::new(r"C:\SC\mappings\layout.xml"), AfterPrompt::CloseFile, false);
         assert!(!other.message.contains("overwritten"));
         assert!(other.message.contains("layout.xml"));
     }
@@ -3502,24 +3396,6 @@ mod tests {
     }
 
     #[test]
-    fn blank_keyboard_cells_count_as_empty() {
-        let profile = xml_doc::from_str(
-            r#"<p><actionmap name="m">
-                <action name="a" keyboard=" "/><action name="b"/><action name="c" keyboard="f"/>
-                <action name="d" keyboard=" "/>
-            </actionmap></p>"#,
-        )
-        .unwrap();
-        let rebind_file = xml_doc::from_str(
-            r#"<ActionMaps><actionmap name="m"><action name="d"><rebind input="kb1_g"/></action></actionmap></ActionMaps>"#,
-        )
-        .unwrap();
-        let rows = action_paths(&profile, &find_actionmaps(&profile));
-        // a and b are unbound; d's blank keyboard is filled by its rebind.
-        assert_eq!(count_empty_keyboard(&profile, &rows, &read_rebinds(&rebind_file)), 2);
-    }
-
-    #[test]
     fn several_rebinds_of_one_device_conflict() {
         let profile = xml_doc::from_str(PROFILE).unwrap();
         let rebind_file = xml_doc::from_str(
@@ -3554,107 +3430,6 @@ mod tests {
     }
 
     #[test]
-    fn autofill_targets_actions_without_keyboard() {
-        let profile = xml_doc::from_str(
-            r#"<p><actionmap name="m">
-                <action name="a" keyboard="f"/>
-                <action name="b" keyboard=" "/>
-                <action name="c"/>
-                <action name="d" keyboard=" "/>
-            </actionmap></p>"#,
-        )
-        .unwrap();
-        let rebind_file = xml_doc::from_str(
-            r#"<ActionMaps><actionmap name="m"><action name="b"><rebind input="kb1_g"/></action>
-                <action name="d"><rebind input="kb1_ "/><rebind input="js1_button1"/></action></actionmap></ActionMaps>"#,
-        )
-        .unwrap();
-        let rows = action_paths(&profile, &find_actionmaps(&profile));
-        let unbound = unbound_keyboard_actions(&profile, &rows, &read_rebinds(&rebind_file));
-        // a is bound by the profile and b by its rebind; d's only keyboard rebind is empty.
-        assert_eq!(unbound, [("m".into(), "c".into()), ("m".into(), "d".into())]);
-    }
-
-    #[test]
-    fn keyboard_rebinds_fill_empty_ones_or_are_added() {
-        let mut rebind_file = xml_doc::from_str(
-            r#"<ActionMaps><ActionProfiles profileName="default">
-                <actionmap name="m"><action name="d"><rebind input="kb1_ "/><rebind input="js1_button1"/></action></actionmap>
-            </ActionProfiles></ActionMaps>"#,
-        )
-        .unwrap();
-        set_keyboard_rebind(&mut rebind_file, "m", "d", "kb1_lctrl+a");
-        set_keyboard_rebind(&mut rebind_file, "m", "v_set_x", "kb1_lctrl+b");
-        set_keyboard_rebind(&mut rebind_file, "new_map", "v_set_y", "kb1_ralt+c");
-        let rebinds = read_rebinds(&rebind_file);
-        assert_eq!(rebinds[&("m".into(), "d".into())], ["kb1_lctrl+a", "js1_button1"]);
-        assert_eq!(rebinds[&("m".into(), "v_set_x".into())], ["kb1_lctrl+b"]);
-        assert_eq!(rebinds[&("new_map".into(), "v_set_y".into())], ["kb1_ralt+c"]);
-        // The new actionmap sits next to the existing one, inside ActionProfiles.
-        let xml = xml_doc::to_string(&rebind_file).unwrap();
-        assert!(xml.contains("<action name=\"v_set_x\">\n"), "{xml}");
-        let profiles = xml_doc::child_elements(&rebind_file).next().unwrap();
-        assert_eq!(xml_doc::child_elements(profiles).count(), 2);
-    }
-
-    #[test]
-    fn blank_layout_gets_the_missing_profile_actions() {
-        let mut layout = xml_doc::from_str(
-            r#"<ActionMaps version="1">
-                <CustomisationUIHeader label="@ui_CMBlank"><Devices><Keyboard instance="1"/><Joystick instance="2"/></Devices></CustomisationUIHeader>
-                <modifiers><mod input=" "/></modifiers>
-                <actionmap name="m1">
-                    <action name="a">
-                        <rebind device="keyboard" activationMode="press" input=" "/>
-                        <rebind device="joystick" input="js1_ "/>
-                        <rebind device="joystick" input="js2_ "/>
-                    </action>
-                    <action name="stale"><rebind device="keyboard" input=" "/></action>
-                </actionmap>
-                <actionmap name="old"><action name="gone"><rebind device="keyboard" input=" "/></action></actionmap>
-            </ActionMaps>"#,
-        )
-        .unwrap();
-        let actions: Vec<(String, String)> =
-            [("m1", "a"), ("m1", "b"), ("m2", "c"), ("m2", "c")].map(|(m, a)| (m.into(), a.into())).into();
-        assert_eq!(complete_blank_layout(&mut layout, &actions), (2, 2));
-
-        let xml = xml_doc::to_string(&layout).unwrap();
-        // The header, devices, modifiers and the layout's actions in the profile are kept.
-        for kept in ["@ui_CMBlank", "<Joystick instance=\"2\"", "<modifiers>", "activationMode=\"press\""] {
-            assert!(xml.contains(kept), "{kept} missing in {xml}");
-        }
-        // Layout actions not in the profile go, and so does the actionmap they leave empty.
-        for gone in ["name=\"stale\"", "name=\"gone\"", "name=\"old\""] {
-            assert!(!xml.contains(gone), "{gone} still in {xml}");
-        }
-        let names: Vec<&str> = xml_doc::child_elements(&layout)
-            .filter(|child| child.name == ACTIONMAP_TAG)
-            .map(|map| map.attributes["name"].as_str())
-            .collect();
-        assert_eq!(names, ["m1", "m2"]);
-        // New actions get the first action's blank rebinds, without activationMode.
-        let rebinds = read_rebinds(&layout);
-        let expected: Vec<String> = ["kb1_ ", "js1_ ", "js2_ "].map(String::from).into();
-        assert_eq!(rebinds[&("m1".into(), "b".into())], expected);
-        assert_eq!(rebinds[&("m2".into(), "c".into())], expected);
-        assert_eq!(xml.matches("activationMode").count(), 1);
-    }
-
-    #[test]
-    fn cell_text_splits_on_commas_and_gets_the_column_prefix() {
-        assert_eq!(
-            parse_cell_inputs("keyboard", " up , kb2_numpad8,, lalt+k ").unwrap(),
-            ["kb1_up", "kb2_numpad8", "kb1_lalt+k"]
-        );
-        // A conflict cell is shown with " | " between the inputs; editing it keeps them apart.
-        assert_eq!(parse_cell_inputs("keyboard", "kb1_x | kb1_y").unwrap(), ["kb1_x", "kb1_y"]);
-        assert_eq!(parse_cell_inputs("mouse", "mouse4").unwrap(), ["mo1_mouse4"]);
-        assert_eq!(parse_cell_inputs("joystick", " ").unwrap(), Vec::<String>::new());
-        assert!(parse_cell_inputs("keyboard", "w, js1_button2").is_err());
-    }
-
-    #[test]
     fn current_rebind_file_is_recognized() {
         use std::path::Path;
         assert!(is_current_rebind(Path::new(
@@ -3665,65 +3440,6 @@ mod tests {
             r"D:\Games\StarCitizen\LIVE\user\client\0\controls\mappings\actionmaps.xml"
         )));
         assert!(!is_current_rebind(Path::new(r"D:\xml\actionmaps.xml")));
-    }
-
-    #[test]
-    fn edited_cells_replace_that_devices_rebinds_only() {
-        let mut rebind_file = xml_doc::from_str(
-            r#"<ActionMaps><ActionProfiles profileName="default">
-                <actionmap name="m"><action name="a"><rebind input="kb1_x" multiTap="2"/><rebind input="js1_button1"/><rebind input="kb1_y"/></action></actionmap>
-            </ActionProfiles></ActionMaps>"#,
-        )
-        .unwrap();
-        let inputs = |list: &[&str]| list.iter().map(|input| input.to_string()).collect::<Vec<_>>();
-
-        // Each input gets a <rebind> of its own; a kept one keeps its attributes.
-        set_device_rebinds(&mut rebind_file, "m", "a", "keyboard", &inputs(&["kb1_up", "kb1_x"]));
-        let rebinds = read_rebinds(&rebind_file);
-        assert_eq!(rebinds[&("m".into(), "a".into())], ["kb1_up", "kb1_x", "js1_button1"]);
-        let xml = xml_doc::to_string(&rebind_file).unwrap();
-        assert!(xml.contains(r#"<rebind input="kb1_x" multiTap="2""#), "{xml}");
-
-        // An action only in the profile gets an <action> element.
-        set_device_rebinds(&mut rebind_file, "m", "b", "mouse", &inputs(&["mo1_mouse4"]));
-        assert_eq!(read_rebinds(&rebind_file)[&("m".into(), "b".into())], ["mo1_mouse4"]);
-
-        // Clearing removes the device's rebinds, and the action once nothing is left.
-        set_device_rebinds(&mut rebind_file, "m", "a", "keyboard", &[]);
-        assert_eq!(read_rebinds(&rebind_file)[&("m".into(), "a".into())], ["js1_button1"]);
-        set_device_rebinds(&mut rebind_file, "m", "b", "mouse", &[]);
-        let xml = xml_doc::to_string(&rebind_file).unwrap();
-        assert!(!xml.contains("name=\"b\""), "{xml}");
-
-        // Clearing an action the file doesn't have adds nothing.
-        set_device_rebinds(&mut rebind_file, "m", "c", "keyboard", &[]);
-        assert!(!xml_doc::to_string(&rebind_file).unwrap().contains("name=\"c\""));
-    }
-
-    #[test]
-    fn blank_layout_rebinds_read_and_edit_by_their_device() {
-        const BLANK: &str = r#"<ActionMaps><actionmap name="m1">
-                <action name="a">
-                    <rebind device="gamepad" input=" "/>
-                    <rebind device="keyboard" activationMode="press" input=" "/>
-                    <rebind device="joystick" input="js1_ "/>
-                </action>
-            </actionmap></ActionMaps>"#;
-        let mut rebind_file = xml_doc::from_str(BLANK).unwrap();
-        // Unprefixed blank inputs read as their device's empty rebind, and are all kept.
-        assert_eq!(read_rebinds(&rebind_file)[&("m1".into(), "a".into())], ["gp1_ ", "kb1_ ", "js1_ "]);
-
-        // Editing the keyboard cell replaces the blank keyboard rebind in its place.
-        set_device_rebinds(&mut rebind_file, "m1", "a", "keyboard", &["kb1_f".into()]);
-        assert_eq!(read_rebinds(&rebind_file)[&("m1".into(), "a".into())], ["gp1_ ", "kb1_f", "js1_ "]);
-        assert_eq!(xml_doc::to_string(&rebind_file).unwrap().matches("<rebind").count(), 3);
-
-        // Autofill fills a blank keyboard rebind too, keeping its other attributes.
-        let mut rebind_file = xml_doc::from_str(BLANK).unwrap();
-        set_keyboard_rebind(&mut rebind_file, "m1", "a", "kb1_g");
-        assert_eq!(read_rebinds(&rebind_file)[&("m1".into(), "a".into())], ["gp1_ ", "kb1_g", "js1_ "]);
-        let xml = xml_doc::to_string(&rebind_file).unwrap();
-        assert!(xml.contains(r#"activationMode="press" input="kb1_g""#), "{xml}");
     }
 
     #[test]

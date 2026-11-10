@@ -5,5 +5,6 @@ pub mod game_dir;
 pub mod json;
 pub mod keys;
 pub mod localization;
+pub mod rebinds;
 pub mod search;
 pub mod xml_doc;

@@ -1,28 +1,32 @@
 # ctrlXref Star Citizen Control Bindings Cross-reference Utility
 
 
-A Windows desktop tool for viewing and editing [Star Citizen](https://robertsspaceindustries.com/) control bindings. ctrlXref cross-references the game's default control profile with your own rebind files, so you can see every action and its bindings in one table.
+A Windows desktop tool for viewing and modifying [Star Citizen](https://robertsspaceindustries.com/) control bindings. ctrlXref cross-references the game's default control profile with your own custom rebind files. You will be able to see and modify every action and its bindings in a single table. Merging multiple custom rebind files from various sources is now supported for creating a new custom binding with all your preferred bindings.
+### What it's not
+ctrlXref does not identify as [Star Citizen](https://robertsspaceindustries.com/) control profile editor as the application is lacking proper modeling of various devices and the controls they provide. You can manipulate the controls manually inside the table cells but there's no dialogs, dropdowns, key or button press, etc. support. You are encouraged to use the Game integrated control editor or some other 3rd party solutions (as the great: [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your control settings.  
 
 > [!NOTE]
 > ctrlXref is an unofficial fan project and is not affiliated with or endorsed by Cloud Imperium Games.
 
 > [!WARNING]
-> Work In Progress! This application is still a very early development release with testing of the functionality hardly started.
+> Work In Progress! This application is still a early development release with testing of the functionality hardly started.
 > Make manual backups of your controls under `StarCitizen\LIVE\user\client\0\controls\mappings\` before using ctrlXref 
 > as modifications made by this application are ***not reversible*** and might not work within the actual game.
 
 > [!NOTE] 
-> - TODO Update / Fix and integrated Help documentation.
-> - TODO Add a "Reset" button to revert all changes made to the table
-> - TODO Improvement of the "inline" editing and action modification behavior.
-> - TODO Joystick / pedal etc. real name mapping instead of js1_ js2_ jsn_
+> - TODO Update / improve the integrated Help documentation.
+> - TODO ***PDF*** File export?
+> - TODO Printer support (probably doable using the ***Light theme*** quite easily)?
+
 
 ## Features
 
 - Browse all ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, using the game's own `English labels.`
 - See default bindings side by side with your rebinds for keyboard, mouse, joysticks and gamepad.
 - Edit bindings directly in the table, with possible conflicts shown in red.
-- List the game's localized control names in a sortable table.
+- Merge multiple custom rebind files to create your preferred control setup and confirm which controls are truly bound to what action.
+- Conflicting controls manual resolving support (TODO improved edit features later).
+- List the game's control name list with examples in a sortable table.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
 - Search the table and the tree with regular expressions (`Ctrl+F`, `F3`, `Shift+F3`), keeping previous searches in a dropdown list.
 - Open the game's current `actionmaps.xml` or any mappings file you exported from the game.
@@ -35,7 +39,7 @@ ctrlXref writes only to rebind files. It never changes `Data.p4k` or `defaultPro
 
 ## Requirements
 
-- Windows
+- Windows 10 or later 64bit
 - A Star Citizen installation (or a valid Star Citizen Game `Data.p4k` under `StarCitizen\LIVE\` folder)
 - The [unp4k tools](#install-the-unp4k-tools), to extract the default controls from the game data
 - [Rust](https://www.rust-lang.org/tools/install) (current stable, with the MSVC toolchain), to build from source
@@ -117,7 +121,7 @@ This keeps the folder compact and saves a lot of time. A full extraction can tak
 Once the game folder is set, ctrlXref opens the extracted default profile at startup. Use **File > Open Current Rebind File** to load your active bindings, or **File > Open Custom Rebind File...** to load an exported mappings file. Edits stay in memory until you save them.
 
 > [!WARNING]
-> The game overwrites its current `actionmaps.xml` when you change controls in-game. Use **File > Save Rebind Copy As...** to keep a backup of your bindings.
+> The game overwrites its current `actionmaps.xml` when you change controls in-game. Use **File > Save Rebind Copy As...** to keep a backup of your bindings. Versions before 0.5.10 gave the copy the original's name in the game's profile list; see the [release notes](https://github.com/ai-override/ctrlXref/releases) to fix older copies.
 
 You can also pass the files to open on the command line:
 
@@ -145,12 +149,6 @@ cargo test      # Run the tests
 
 `version.txt` holds the application version. `build.rs` raises its patch number on the first build of each day with source changes, so the file regularly shows as modified.
 
-### Donations
-If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive Coffee consumption: [classloader](https://paypal.me/SCclassloader?target=_blank)
-
-### Discord
-My Discord: [primordial](https://discord.com/users/primordial_23184)
-
 ## License
 
 ctrlXref is released under the [MIT License](LICENSE). You are free to use, copy, modify, merge, publish, distribute, sublicense and sell copies of the software, as long as the copyright notice and license text are included in all copies or substantial portions of it. The software is provided "as is", without warranty of any kind. See the [`LICENSE`](LICENSE) file for the full terms.
@@ -159,3 +157,25 @@ Third-party components keep their own licenses:
 
 - [unp4k](https://github.com/dolkensp/unp4k) is a separate project under the MIT license. It isn't included in this repository.
 - The Electrolize font is under the SIL Open Font License. See [`assets/fonts/OFL.txt`](assets/fonts/OFL.txt).
+
+
+### Donations
+If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive high quality Coffee consumption to:
+[classloader](https://paypal.me/SCclassloader?target=_blank)
+
+[comment]: # (classloader https://paypal.me/cassoverride?target=_blank Dysfuncional atm because PayPal refuses to accept my business account for receivinfg payments.) 
+
+[comment]: # (Check the functionality of the paypal.me link as there are constant/random errors in PayPal account settings modifications and many submits and button presses return Try Again Later Errors and Warnings)
+
+### Discord
+My Discord: [primordial](https://discord.com/users/primordial_23184)
+
+## Release
+For all of us lazy gamers, here's the pre-built exe. No installation required or even supported.
+[Latest Release](https://github.com/ai-override/ctrlXref/releases)
+
+
+## Screenshots
+- ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
+- ![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
+- ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)

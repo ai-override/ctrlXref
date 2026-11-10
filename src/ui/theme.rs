@@ -1,6 +1,7 @@
 //! The dark theme, modelled on the table of the Star Citizen Ship Matrix
-//! (<https://robertsspaceindustries.com/en/ship-matrix>), and the selection color of the
-//! light theme. Colors noted as "site" are from that page's `#statsapp` stylesheet rules.
+//! (<https://robertsspaceindustries.com/en/ship-matrix>), the selection and table stripe colors
+//! of the light theme, and the heading font of both. Colors noted as "site" are from that page's
+//! `#statsapp` stylesheet rules.
 
 use eframe::egui::{self, Color32, Context, FontFamily, RichText, Stroke, Theme, Ui};
 
@@ -57,12 +58,16 @@ const SELECTION: Color32 = premultiplied(0x00, 0x7a, 0xff, 0xbf);
 /// A hovered row; the site has none, so the highlight blue kept fainter than the selection.
 const HOVER: Color32 = highlight(0x2e);
 
-/// Installs the dark theme and the light theme's selection color.
+/// The light theme's striped table lines, a little darker than its panels (gray 248).
+const LIGHT_STRIPE: Color32 = Color32::from_gray(236);
+
+/// Installs the dark theme and the light theme's selection and stripe colors.
 pub fn apply(ctx: &Context) {
     ctx.style_mut_of(Theme::Dark, |style| dark_visuals(&mut style.visuals));
     // Stands out more than egui's default: blue-500 at 30%.
     ctx.style_mut_of(Theme::Light, |style| {
         style.visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(0x3b, 0x82, 0xf6, 0x4d);
+        style.visuals.faint_bg_color = LIGHT_STRIPE;
     });
 }
 
@@ -102,12 +107,12 @@ fn dark_visuals(visuals: &mut egui::Visuals) {
     widgets.open.fg_stroke = Stroke::new(1., ACCENT);
 }
 
-/// `text` as a heading of the dark theme: uppercase Electrolize, in the strong text color.
+/// `text` as a heading of either theme: uppercase Electrolize, in the strong text color.
 pub fn heading_text(text: &str) -> RichText {
     exact_heading_text(&text.to_uppercase())
 }
 
-/// `text` in the dark theme's heading font and strong text color, its case kept.
+/// `text` in the heading font and strong text color, its case kept.
 pub fn exact_heading_text(text: &str) -> RichText {
     RichText::new(text).family(FontFamily::Name(HEADING.into())).strong()
 }
@@ -144,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn apply_styles_the_dark_theme_and_only_the_selection_of_the_light_theme() {
+    fn apply_styles_the_dark_theme_and_only_the_selection_and_stripes_of_the_light_theme() {
         let ctx = Context::default();
         apply(&ctx);
 
@@ -158,7 +163,7 @@ mod tests {
         let light = ctx.style_of(Theme::Light);
         let defaults = egui::Visuals::light();
         assert_eq!(light.visuals.panel_fill, defaults.panel_fill);
-        assert_eq!(light.visuals.faint_bg_color, defaults.faint_bg_color);
+        assert_eq!(light.visuals.faint_bg_color, LIGHT_STRIPE);
         assert_eq!(light.visuals.text_color(), defaults.text_color());
     }
 

@@ -30,6 +30,22 @@ says how many combinations are unused and which files' bindings were counted:
 
 The **Copy** button copies the summary and the whole list.
 
+## Resolve Control Conflicts
+
+Goes through the conflicting cells, the red ones, from the top of the table to the bottom in the
+current sort order, opening each one for editing. Delete the controls you don't want.
+
+- **Tab** or **Enter** keeps what the cell now holds and goes to the next conflict, and
+  **Shift+Tab** to the previous one, also when the conflict is left unresolved. From the last
+  conflict, **Tab** goes around to the first one.
+- Leftover ` | ` separators are removed when you leave a cell, and a binding whose device prefix
+  got partly deleted gets it back, so `s3_button1` stays `js3_button1`. A prefix with no control
+  left, like `js3`, shows a warning and the cell keeps its old value.
+- **Esc** stops and leaves the current cell as it was. Clicking elsewhere also stops, keeping
+  what you typed.
+- It ends by itself when no conflicts are left. Changes are written only when you save the
+  rebind file.
+
 ## Show Control Names
 
 Opens a window that lists the game's names for its controls, centered on the main window. It
@@ -39,6 +55,9 @@ reads `keybinding_localization.xml` next to the open profile, or else
 - The columns are **name**, **localizationString**, **shortLocString** and **Device**. Their `@key`
   references are replaced with the English texts of `global.ini`. A reference the game has no text
   for stays as it is. Few controls have a short name. **Device** says `joystick` without a number.
+- **EXAMPLE** shows each control written as in the actions table's device columns, such as
+  `js1_button21`, `mo1_maxis_x`, `gp1_a` or `kb1_f1`. Keyboard modifiers are shown in a combination
+  (`kb1_ralt+o`), and so are the mouse controls in the keyboard's list (`kb1_lctrl+mouse3`).
 - Of the joysticks, only `joystick2` is listed, since the file repeats the same list for all four
   and `joystick1` has a typo in it. So their texts say **(Input 2)**. The same name can still be on
   several devices, such as `a` on the keyboard and the control pad; **Device** tells them apart.
@@ -52,6 +71,13 @@ reads `keybinding_localization.xml` next to the open profile, or else
 Gives every action without a keyboard binding the next unused key combination, in the
 order of the table. The new bindings are added to the open rebind file, so open one first
 (**File > Open Current Rebind File** or **Open Custom Rebind File...**).
+
+An action counts as unbound too when its keyboard bindings, default or rebind, have no actual key:
+only a mouse control such as `mouse2`, `maxis_z` or `mwheel_up`, or a modifier held with another
+device's control, such as `ralt+mouse2` or `kb1_lalt+js1_button3`. It then gets a key that a device
+sending keystrokes can use. Check in the game that the mouse control still works for those actions.
+An existing rebind of this kind stays, so the cell then has two bindings and is shown in red.
+A modifier on its own, such as `lshift`, is a key.
 
 When there are more unbound actions than unused combinations, the remaining actions stay
 unbound. The message afterwards says how many actions were filled.
