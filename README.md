@@ -13,12 +13,6 @@ ctrlXref does not identify as [Star Citizen](https://robertsspaceindustries.com/
 > Make manual backups of your controls under `StarCitizen\LIVE\user\client\0\controls\mappings\` before using ctrlXref 
 > as modifications made by this application are ***not reversible*** and might not work within the actual game.
 
-> [!NOTE] 
-> - TODO Update / improve the integrated Help documentation.
-> - TODO ***PDF*** File export?
-> - TODO Printer support (probably doable using the ***Light theme*** quite easily)?
-
-
 ## Features
 
 - Browse all ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, using the game's own `English labels.`
@@ -167,15 +161,25 @@ If you find this utility useful, consider making a small donation helping me wit
 
 [comment]: # (Check the functionality of the paypal.me link as there are constant/random errors in PayPal account settings modifications and many submits and button presses return Try Again Later Errors and Warnings)
 
-### Discord
-My Discord: [primordial](https://discord.com/users/primordial_23184)
+[comment]: # (### Discord)
+
+[comment]: # (My Discord: primordialhttps://discord.com/users/primordial_23184?target=_blank)
 
 ## Release
-For all of us lazy gamers, here's the pre-built exe. No installation required or even supported.
+For all of us lazy gamers, here's the pre-built exe. No install required or even supported.
 [Latest Release](https://github.com/ai-override/ctrlXref/releases)
 
-
 ## Screenshots
-- ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
-- ![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
-- ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
+- Column sorting ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
+- Conflict / multibinding resolving![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
+- Column Autofilling (will be refactored into column contextmenu soon) ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
+
+> ## TODO
+> - [x] Update / improve the integrated Help documentation (ongoing).
+> - [ ] Improve the column editing features (maybe quick swap 'kb1_y | kb1_alt+y' <-> 'kb1_alt+y' | 'kb1_y').
+> - [ ] Do separate "limited" autofill also for the other columns (will need keyboard keys to fill all as especially GamePad will run out of button combinations).
+> - [ ] Add clear column with warning message to the column context menu.
+> - [ ] Move the delete and autofill etc. options to contextmenu.
+> - [ ] Column delete all with wildcards like: 'kb* mb1_ * \*x \*maxis\* joy2_* (1 2 3 n delete first or second third n control from cells with multiple controls)
+> - [ ] ***PDF*** File export?
+> - [ ] Printer support (probably doable using the ***Light theme*** quite easily)?
