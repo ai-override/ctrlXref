@@ -121,7 +121,7 @@ This keeps the folder compact and saves a lot of time. A full extraction can tak
 Once the game folder is set, ctrlXref opens the extracted default profile at startup. Use **File > Open Current Rebind File** to load your active bindings, or **File > Open Custom Rebind File...** to load an exported mappings file. Edits stay in memory until you save them.
 
 > [!WARNING]
-> The game overwrites its current `actionmaps.xml` when you change controls in-game. Use **File > Save Rebind Copy As...** to keep a backup of your bindings.
+> The game overwrites its current `actionmaps.xml` when you change controls in-game. Use **File > Save Rebind Copy As...** to keep a backup of your bindings. Versions before 0.5.10 gave the copy the original's name in the game's profile list; see the [release notes](https://github.com/ai-override/ctrlXref/releases) to fix older copies.
 
 You can also pass the files to open on the command line:
 
