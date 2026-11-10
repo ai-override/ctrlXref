@@ -12,16 +12,19 @@ use std::time::{Duration, Instant};
 
 use ctrlxref::localization::Strings;
 use ctrlxref::rebinds::{
-    DEVICES, Rebinds, action_key, action_paths, clear_device_rebinds, complete_blank_layout,
-    count_empty_keyboard, find_actionmaps, is_empty_rebind, merge_rebinds, parse_cell_inputs, profile_input, read_rebinds, rebind_device,
-    set_device_rebinds, set_keyboard_rebind, unbound_keyboard_actions,
+    DEVICES, MAX_HEADER_LABEL, Rebinds, action_key, action_paths, clear_device_rebinds, complete_blank_layout,
+    count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind, merge_rebinds,
+    parse_cell_inputs, profile_input, read_rebinds, rebind_device, set_device_rebinds, set_header_label,
+    set_keyboard_rebind, unbound_keyboard_actions,
 };
 use ctrlxref::search::{self, Place};
 use ctrlxref::xml_doc;
 use ctrlxref::{extract, game_dir, keys};
+use eframe::egui::text::CCursor;
+use eframe::egui::text_selection::CCursorRange;
 use eframe::egui::{
-    self, Align, Align2, Color32, Context, IconData, Id, Key, Layout, RichText, ScrollArea, Theme, ViewportBuilder,
-    ViewportCommand,
+    self, Align, Align2, Color32, Context, IconData, Id, Key, Layout, RichText, ScrollArea, TextEdit, Theme,
+    ViewportBuilder, ViewportCommand,
 };
 use egui_commonmark::CommonMarkCache;
 use xmltree::Element;
@@ -277,6 +280,13 @@ impl Dialog {
     }
 }
 
+/// The box Save Rebind Copy As shows first, asking for the copy's header label.
+struct LabelPrompt {
+    text: String,
+    /// Set until the field has taken the focus with all its text selected.
+    focus: bool,
+}
+
 pub struct CtrlXrefApp {
     ctx: Context,
     table: AttributeTable,
@@ -321,6 +331,10 @@ pub struct CtrlXrefApp {
     save_as_after: Option<AfterPrompt>,
     /// The Tools > Show Control Names window, while it is open.
     control_names: Option<ControlNamesWindow>,
+    /// The Save Rebind Copy As label box, while it is open.
+    label_prompt: Option<LabelPrompt>,
+    /// The label the box accepted, for the save box shown next.
+    pending_copy_label: Option<String>,
 }
 
 impl CtrlXrefApp {
@@ -362,6 +376,8 @@ impl CtrlXrefApp {
             undo: UndoStack::default(),
             save_as_after: None,
             control_names: None,
+            label_prompt: None,
+            pending_copy_label: None,
         }
     }
 
@@ -391,7 +407,7 @@ impl CtrlXrefApp {
             Command::OpenCustomRebindFile => self.open_custom_rebind_file(frame),
             Command::MergeRebindFile => self.merge_rebind_file(frame),
             Command::SaveRebindFile => self.save_rebind_file(),
-            Command::SaveRebindCopyAs => self.save_rebind_copy_as(frame),
+            Command::SaveRebindCopyAs => self.save_rebind_copy_as(),
             Command::CreateBlankRebindFile => self.create_blank_rebind_file(frame),
             Command::CloseFile => self.unless_unsaved(AfterPrompt::CloseFile),
             Command::Quit => self.ctx.send_viewport_cmd(ViewportCommand::Close),
@@ -1154,16 +1170,35 @@ impl CtrlXrefApp {
         }
     }
 
-    /// Writes the rebind file to a new path, as a backup or a copy to edit later. The open
-    /// rebind file stays the one Save Rebind File writes.
-    fn save_rebind_copy_as(&mut self, frame: &eframe::Frame) {
+    /// Starts writing the rebind file to a new path, as a backup or a copy to edit later, by
+    /// asking for the copy's header label, which names it in the game's list of control
+    /// profiles; [`Self::save_rebind_copy_with_label`] goes on. The open rebind file stays the
+    /// one Save Rebind File writes.
+    fn save_rebind_copy_as(&mut self) {
+        if self.rebind_path().is_none() {
+            return;
+        }
+        let label = self
+            .document
+            .as_ref()
+            .and_then(|doc| doc.rebind_root.as_ref())
+            .and_then(header_label)
+            .unwrap_or_default()
+            .to_string();
+        self.label_prompt = Some(LabelPrompt { text: label, focus: true });
+    }
+
+    /// Asks where to save the copy and writes it there with `label` in its header; the open
+    /// rebind file is not changed.
+    fn save_rebind_copy_with_label(&mut self, label: &str, frame: &eframe::Frame) {
         let Some(path) = self.pick_copy_path("Save Rebind Copy As", frame) else {
             return;
         };
-        let Some(root) = self.document.as_ref().and_then(|doc| doc.rebind_root.as_ref()) else {
+        let Some(mut root) = self.document.as_ref().and_then(|doc| doc.rebind_root.clone()) else {
             return;
         };
-        match xml_doc::save(root, &path) {
+        set_header_label(&mut root, label);
+        match xml_doc::save(&root, &path) {
             Ok(()) => self.dialogs.push(Dialog::saved(format!("Saved copy to {}", path.display()), &path)),
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
         }
@@ -1880,6 +1915,75 @@ impl CtrlXrefApp {
         }
     }
 
+    /// Shows the Save Rebind Copy As label box: the label starts selected, and a blank one or
+    /// one longer than [`MAX_HEADER_LABEL`] characters cannot be saved. Enter saves, Escape
+    /// cancels.
+    fn label_prompt(&mut self, ctx: &Context) {
+        if !self.dialogs.is_empty() {
+            return;
+        }
+        let Some(prompt) = &mut self.label_prompt else {
+            return;
+        };
+        let mut close = false;
+        let mut accepted = None;
+        let response = egui::Modal::new(Id::unique("copy label")).show(ctx, |ui| {
+            ui.set_width(420.);
+            ui.heading("Copy Label");
+            ui.add_space(8.);
+            ui.label(format!(
+                "The name shown in the game's list of control profiles (1-{MAX_HEADER_LABEL} characters)."
+            ));
+            ui.add_space(8.);
+            let error = header_label_error(&prompt.text);
+            let mut output = TextEdit::singleline(&mut prompt.text)
+                .id_salt("copy label text")
+                .char_limit(MAX_HEADER_LABEL)
+                .desired_width(f32::INFINITY)
+                .show(ui);
+            let id = output.response.response.id;
+            // The modal's first frame only measures it, invisibly, and takes no focus; select
+            // the label on the first frame it is shown.
+            if prompt.focus && !ui.is_sizing_pass() {
+                prompt.focus = false;
+                output.response.response.request_focus();
+                let all = CCursorRange::two(CCursor::new(0), CCursor::new(prompt.text.chars().count()));
+                output.state.cursor.set_char_range(Some(all));
+                output.state.store(ui.ctx(), id);
+            }
+            let entered = output.response.response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            ui.horizontal(|ui| {
+                match error {
+                    Some(error) => ui.label(RichText::new(error).color(ui.visuals().warn_fg_color)),
+                    None => ui.label(""),
+                };
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(format!("{}/{MAX_HEADER_LABEL}", prompt.text.trim().chars().count())).weak());
+                });
+            });
+            ui.add_space(12.);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let save = ui.add_enabled(error.is_none(), egui::Button::new("Save Copy..."));
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+                if error.is_none() && (save.clicked() || entered) {
+                    accepted = Some(prompt.text.trim().to_string());
+                    close = true;
+                } else if entered {
+                    // Keep typing after Enter on a label that cannot be saved.
+                    output.response.response.request_focus();
+                }
+            });
+        });
+        if close || response.should_close() {
+            self.label_prompt = None;
+        }
+        if accepted.is_some() {
+            self.pending_copy_label = accepted;
+        }
+    }
+
     /// Draws the notifications in the bottom-right corner, newest at the bottom; a click
     /// dismisses one.
     fn toasts(&mut self, ctx: &Context) {
@@ -1984,6 +2088,7 @@ impl eframe::App for CtrlXrefApp {
 
         self.search_dialog(&ctx);
         self.dialog(&ctx);
+        self.label_prompt(&ctx);
         self.toasts(&ctx);
         self.help_windows(&ctx);
         self.control_names_window(&ctx);
@@ -1992,6 +2097,9 @@ impl eframe::App for CtrlXrefApp {
         }
         if let Some(after) = self.save_as_after.take() {
             self.save_as_then(after, frame);
+        }
+        if let Some(label) = self.pending_copy_label.take() {
+            self.save_rebind_copy_with_label(&label, frame);
         }
     }
 }

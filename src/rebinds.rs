@@ -568,9 +568,131 @@ pub fn read_rebinds(root: &Element) -> Rebinds {
     rebinds
 }
 
+/// The rebind file's header, whose `label` names the file in the game's list of control profiles.
+pub const HEADER_TAG: &str = "CustomisationUIHeader";
+
+/// The most characters a header label can have, so it fits the game's list of control profiles.
+pub const MAX_HEADER_LABEL: usize = 32;
+
+/// The first [`HEADER_TAG`] element under `root`, in document order, outside the actionmaps.
+/// The files the game writes keep it inside `<ActionProfiles>`; exported layouts keep it
+/// directly under the root.
+fn find_header(root: &Element) -> Option<&Element> {
+    xml_doc::child_elements(root).filter(|child| child.name != ACTIONMAP_TAG).find_map(|child| {
+        if child.name == HEADER_TAG { Some(child) } else { find_header(child) }
+    })
+}
+
+fn find_header_mut(root: &mut Element) -> Option<&mut Element> {
+    root.children
+        .iter_mut()
+        .filter_map(XMLNode::as_mut_element)
+        .filter(|child| child.name != ACTIONMAP_TAG)
+        .find_map(|child| if child.name == HEADER_TAG { Some(child) } else { find_header_mut(child) })
+}
+
+/// The `label` of the rebind file's [`HEADER_TAG`], if it has one.
+pub fn header_label(root: &Element) -> Option<&str> {
+    find_header(root).and_then(|header| header.attributes.get("label")).map(String::as_str)
+}
+
+/// Sets the `label` of the rebind file's [`HEADER_TAG`], keeping its other attributes and
+/// children. Without a header, one with only the label is added as the first child of the
+/// `<ActionProfiles>` element, else of the root.
+pub fn set_header_label(root: &mut Element, label: &str) {
+    if let Some(header) = find_header_mut(root) {
+        header.attributes.insert("label".into(), label.into());
+        return;
+    }
+    let mut header = Element::new(HEADER_TAG);
+    header.attributes.insert("label".into(), label.into());
+    let profiles = root.children.iter().position(|node| node.as_element().is_some_and(|child| child.name == "ActionProfiles"));
+    let parent = match profiles {
+        Some(ix) => root.children[ix].as_mut_element().expect("an element"),
+        None => root,
+    };
+    parent.children.insert(0, XMLNode::Element(header));
+}
+
+/// Why `label` cannot be a header label, or `None` when it can: it must not be blank and must
+/// have at most [`MAX_HEADER_LABEL`] characters, leading and trailing spaces left out.
+pub fn header_label_error(label: &str) -> Option<&'static str> {
+    let label = label.trim();
+    if label.is_empty() {
+        Some("The label can't be empty")
+    } else if label.chars().count() > MAX_HEADER_LABEL {
+        Some("The label can be at most 32 characters")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_label_is_read_and_set_keeping_the_rest() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><CustomisationUIHeader label="Old" description="d" image=""><devices><keyboard instance="1"/></devices></CustomisationUIHeader><modifiers/><actionmap name="m"/></ActionMaps>"#,
+        )
+        .unwrap();
+        assert_eq!(header_label(&root), Some("Old"));
+        set_header_label(&mut root, "New name");
+        assert_eq!(header_label(&root), Some("New name"));
+        let children: Vec<_> = xml_doc::child_elements(&root).map(|child| child.name.as_str()).collect();
+        assert_eq!(children, [HEADER_TAG, "modifiers", "actionmap"]);
+        let header = xml_doc::child_elements(&root).next().unwrap();
+        assert_eq!(header.attributes["description"], "d");
+        assert_eq!(xml_doc::child_elements(header).next().unwrap().name, "devices");
+    }
+
+    #[test]
+    fn header_label_is_found_inside_action_profiles() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><ActionProfiles profileName="default"><CustomisationUIHeader label="Game"/><actionmap name="m"/></ActionProfiles></ActionMaps>"#,
+        )
+        .unwrap();
+        assert_eq!(header_label(&root), Some("Game"));
+        set_header_label(&mut root, "Copy");
+        assert_eq!(header_label(&root), Some("Copy"));
+        let xml = xml_doc::to_string(&root).unwrap();
+        assert_eq!(xml.matches(HEADER_TAG).count(), 1, "{xml}");
+    }
+
+    #[test]
+    fn header_is_added_inside_action_profiles_when_missing() {
+        let mut root =
+            xml_doc::from_str(r#"<ActionMaps><ActionProfiles profileName="default"><actionmap name="m"/></ActionProfiles></ActionMaps>"#)
+                .unwrap();
+        set_header_label(&mut root, "Copy");
+        let profiles = xml_doc::child_elements(&root).next().unwrap();
+        assert_eq!(xml_doc::child_elements(profiles).next().unwrap().name, HEADER_TAG);
+        assert_eq!(header_label(&root), Some("Copy"));
+    }
+
+    #[test]
+    fn header_is_added_when_missing() {
+        let mut root = xml_doc::from_str(r#"<ActionMaps><actionmap name="m"/></ActionMaps>"#).unwrap();
+        assert_eq!(header_label(&root), None);
+        set_header_label(&mut root, "Copy");
+        assert_eq!(header_label(&root), Some("Copy"));
+        assert_eq!(xml_doc::child_elements(&root).next().unwrap().name, HEADER_TAG);
+        assert_eq!(xml_doc::child_elements(&root).count(), 2);
+    }
+
+    #[test]
+    fn header_label_must_be_one_to_32_characters() {
+        assert!(header_label_error("").is_some());
+        assert!(header_label_error("   ").is_some());
+        assert_eq!(header_label_error("a"), None);
+        assert_eq!(header_label_error(&"a".repeat(32)), None);
+        assert_eq!(header_label_error(&format!("  {}  ", "a".repeat(32))), None);
+        assert!(header_label_error(&"a".repeat(33)).is_some());
+        // Characters are counted, not bytes.
+        assert_eq!(header_label_error(&"ä".repeat(32)), None);
+        assert!(header_label_error(&"ä".repeat(33)).is_some());
+    }
 
     #[test]
     fn merging_appends_conflicts_and_leaves_out_what_the_action_has() {

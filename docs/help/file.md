@@ -161,9 +161,14 @@ File...**, **Tools > Export to .csv...** and **Tools > Export to .json...** offe
 
 ## Save Rebind Copy As... (Ctrl+Shift+S)
 
-Writes the open rebind file to a new file, as a backup or a copy to edit later. The name
-suggested is the original name with `_copy` added. After this, **Save Rebind File** still
-writes the original file, not the copy.
+Writes the open rebind file to a new file, as a backup or a copy to edit later. First it asks
+for the copy's label, the name the game shows in its list of control profiles, so the copy
+can be told apart from the original there. The label starts as the open file's, all selected
+so typing replaces it; it must be 1-32 characters. **Enter** or **Save Copy...** goes on, and
+**Escape** or **Cancel** stops without saving. Only the copy gets the new label.
+
+The name suggested for the file is the original name with `_copy` added. After this,
+**Save Rebind File** still writes the original file, not the copy.
 
 ## Create Blank Rebind File...
 
