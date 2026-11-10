@@ -575,8 +575,8 @@ pub const HEADER_TAG: &str = "CustomisationUIHeader";
 pub const MAX_HEADER_LABEL: usize = 32;
 
 /// The first [`HEADER_TAG`] element under `root`, in document order, outside the actionmaps.
-/// The files the game writes keep it inside `<ActionProfiles>`; exported layouts keep it
-/// directly under the root.
+/// Exported layouts keep it directly under the root; files in the game's profile format
+/// (`<ActionMaps><ActionProfiles>`) usually have none.
 fn find_header(root: &Element) -> Option<&Element> {
     xml_doc::child_elements(root).filter(|child| child.name != ACTIONMAP_TAG).find_map(|child| {
         if child.name == HEADER_TAG { Some(child) } else { find_header(child) }
@@ -597,8 +597,8 @@ pub fn header_label(root: &Element) -> Option<&str> {
 }
 
 /// Sets the `label` of the rebind file's [`HEADER_TAG`], keeping its other attributes and
-/// children. Without a header, one with only the label is added as the first child of the
-/// `<ActionProfiles>` element, else of the root.
+/// children. Without a header, one with only the label is added as the root's first child,
+/// where the game's exported layouts have it.
 pub fn set_header_label(root: &mut Element, label: &str) {
     if let Some(header) = find_header_mut(root) {
         header.attributes.insert("label".into(), label.into());
@@ -606,12 +606,7 @@ pub fn set_header_label(root: &mut Element, label: &str) {
     }
     let mut header = Element::new(HEADER_TAG);
     header.attributes.insert("label".into(), label.into());
-    let profiles = root.children.iter().position(|node| node.as_element().is_some_and(|child| child.name == "ActionProfiles"));
-    let parent = match profiles {
-        Some(ix) => root.children[ix].as_mut_element().expect("an element"),
-        None => root,
-    };
-    parent.children.insert(0, XMLNode::Element(header));
+    root.children.insert(0, XMLNode::Element(header));
 }
 
 /// Why `label` cannot be a header label, or `None` when it can: it must not be blank and must
@@ -661,14 +656,26 @@ mod tests {
     }
 
     #[test]
-    fn header_is_added_inside_action_profiles_when_missing() {
+    fn header_is_added_under_the_root_of_a_profile_format_file() {
         let mut root =
             xml_doc::from_str(r#"<ActionMaps><ActionProfiles profileName="default"><actionmap name="m"/></ActionProfiles></ActionMaps>"#)
                 .unwrap();
+        assert_eq!(header_label(&root), None);
         set_header_label(&mut root, "Copy");
-        let profiles = xml_doc::child_elements(&root).next().unwrap();
-        assert_eq!(xml_doc::child_elements(profiles).next().unwrap().name, HEADER_TAG);
+        let children: Vec<_> = xml_doc::child_elements(&root).map(|child| child.name.as_str()).collect();
+        assert_eq!(children, [HEADER_TAG, "ActionProfiles"]);
         assert_eq!(header_label(&root), Some("Copy"));
+    }
+
+    #[test]
+    fn label_is_added_to_a_header_without_one() {
+        let mut root =
+            xml_doc::from_str(r#"<ActionMaps><CustomisationUIHeader description="d"/><actionmap name="m"/></ActionMaps>"#).unwrap();
+        assert_eq!(header_label(&root), None);
+        set_header_label(&mut root, "Copy");
+        assert_eq!(header_label(&root), Some("Copy"));
+        assert_eq!(xml_doc::child_elements(&root).filter(|child| child.name == HEADER_TAG).count(), 1);
+        assert_eq!(xml_doc::child_elements(&root).next().unwrap().attributes["description"], "d");
     }
 
     #[test]

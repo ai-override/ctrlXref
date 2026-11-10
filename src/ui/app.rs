@@ -1175,16 +1175,20 @@ impl CtrlXrefApp {
     /// profiles; [`Self::save_rebind_copy_with_label`] goes on. The open rebind file stays the
     /// one Save Rebind File writes.
     fn save_rebind_copy_as(&mut self) {
-        if self.rebind_path().is_none() {
+        let Some(path) = self.rebind_path() else {
             return;
-        }
+        };
+        // Files in the game's profile format have no label; their file name stands in.
         let label = self
             .document
             .as_ref()
             .and_then(|doc| doc.rebind_root.as_ref())
             .and_then(header_label)
-            .unwrap_or_default()
-            .to_string();
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let stem = path.file_stem().map(|stem| stem.to_string_lossy()).unwrap_or_default();
+                stem.trim().chars().take(MAX_HEADER_LABEL).collect()
+            });
         self.label_prompt = Some(LabelPrompt { text: label, focus: true });
     }
 
