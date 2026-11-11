@@ -13,9 +13,10 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "de
 # Only to get the symbol fonts, which eframe has no feature for. Without them, symbols like the
 # warning sign and the theme button's sun and moon are drawn as empty boxes.
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
-egui_extras = { version = "0.37.0", default-features = false }
+# "image" and the "png" decoder: the help pages' screenshots, built into the binary.
+egui_extras = { version = "0.37.0", default-features = false, features = ["image"] }
 egui_commonmark = { version = "0.26.0", default-features = false, features = ["pulldown_cmark"] }
-image = { version = "0.25", default-features = false, features = ["ico"] }
+image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 regex = "1"
 rfd = "0.17.2"
 # preserve_order: exported keys stay in the table's column order.

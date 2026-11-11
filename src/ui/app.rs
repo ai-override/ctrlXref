@@ -381,6 +381,7 @@ impl CtrlXrefApp {
         let theme = ThemeChoice::System;
         ctx.set_theme(menus::preference(theme));
         theme::apply(ctx);
+        help::install_images(ctx);
         let mut table = AttributeTable::new();
         // Only the bindings can be edited; the edits go to the rebind file.
         table.set_editable(&DEVICES);

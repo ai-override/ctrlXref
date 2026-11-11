@@ -58,12 +58,16 @@ such actions, an orange warning stays in the corner until you deal with them. It
 button opens the same box as this menu item, and **Ignore and keep** hides the warning
 and leaves the bindings in the file as they are.
 
+![The warning after opening a GameGlass layout made for Star Citizen 4.0](../../assets/images/orphaned_resolve1.png)
+
 The box lists each unmatched action with its bindings and up to three suggested actions of the game
 engine current profile:
 
 - **(same name)**: an action of the same name in another actionmap, so it probably moved.
 - **(~92%)**: an action whose name is that similar, ignoring case and underscores, so it was
   probably renamed. Names less than 70% similar are not suggested.
+
+![The Unmatched Rebinds box with suggested actions](../../assets/images/orphaned_resolve2.png)
 
 Click a suggestion to move the bindings there. They keep their other attributes, such as
 `multiTap`. A suggestion marked ⚠ already has bindings of the same device: both are kept and shown
