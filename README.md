@@ -20,6 +20,7 @@ ctrlXref does not identify as [Star Citizen](https://robertsspaceindustries.com/
 - Edit bindings directly in the table, with possible conflicts shown in red.
 - Merge multiple custom rebind files to create your preferred control setup and confirm which controls are truly bound to what action.
 - Conflicting controls manual resolving support (TODO improved edit features later).
+- Move or remove bindings of actions that older rebind files name but the game engine current profile no longer has, with suggested renamed or moved actions.
 - List the game's control name list with examples in a sortable table.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
 - Search the table and the tree with regular expressions (`Ctrl+F`, `F3`, `Shift+F3`), keeping previous searches in a dropdown list.
@@ -173,6 +174,8 @@ For all of us lazy gamers, here's the pre-built exe. No install required or even
 - Column sorting ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
 - Conflict / multibinding resolving![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
 - Column Autofilling (will be refactored into column contextmenu soon) ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
+- Unmatched rebinds warning after opening an older rebind file (a GameGlass layout made for Star Citizen 4.0) ![Unmatched Rebinds Warning](assets/images/orphaned_resolve1.png)
+- Unmatched rebinds resolving with suggested actions of the game engine current profile ![Unmatched Rebinds Resolving](assets/images/orphaned_resolve2.png)
 
 > ## TODO
 > - [x] Update / improve the integrated Help documentation (ongoing).
