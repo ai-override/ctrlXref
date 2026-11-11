@@ -3,7 +3,7 @@
 The Tools menu finds free keyboard combinations, lists the game's names for its controls, assigns
 combinations to actions that have no keyboard binding, and exports the actions to a spreadsheet file or a structured JSON file.
 
-All tools except **Show Control Names** need the profile to be open (**File > Open
+All tools except **Show Control Names** need the game engine current profile to be open (**File > Open
 defaultProfile**).
 
 ## Key combinations
@@ -45,6 +45,34 @@ current sort order, opening each one for editing. Delete the controls you don't 
   what you typed.
 - It ends by itself when no conflicts are left. Changes are written only when you save the
   rebind file.
+
+## Resolve Unmatched Rebinds...
+
+The **game engine current profile** is the master: `defaultProfile.xml`, extracted from the installed
+game's `Data.p4k`, holds the actions of the game version you play. Rebind files are often older,
+such as a layout from a downloaded app package made for Star Citizen 4.0 while the game is now
+4.10. Such a file can bind actions that the game engine current profile no longer has, and the game
+ignores their bindings. Usually the action was renamed, or moved to another actionmap.
+When **Open Custom Rebind File...**, **Open Current Rebind File** or **Merge Rebind File...** finds
+such actions, an orange warning stays in the corner until you deal with them. Its **Review...**
+button opens the same box as this menu item, and **Ignore and keep** hides the warning
+and leaves the bindings in the file as they are.
+
+The box lists each unmatched action with its bindings and up to three suggested actions of the game
+engine current profile:
+
+- **(same name)**: an action of the same name in another actionmap, so it probably moved.
+- **(~92%)**: an action whose name is that similar, ignoring case and underscores, so it was
+  probably renamed. Names less than 70% similar are not suggested.
+
+Click a suggestion to move the bindings there. They keep their other attributes, such as
+`multiTap`. A suggestion marked ⚠ already has bindings of the same device: both are kept and shown
+in red, for you to choose from in the table. **Remove** takes the bindings out of the file. **Apply
+All Suggestions** moves every action's bindings to its first suggestion, and **Remove All** removes
+all of them. Each button is one step that **Ctrl+Z** undoes. The box closes when no unmatched actions
+are left.
+
+> The changes are only in memory until you save the rebind file.
 
 ## Show Control Names
 

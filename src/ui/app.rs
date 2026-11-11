@@ -12,10 +12,11 @@ use std::time::{Duration, Instant};
 
 use ctrlxref::localization::Strings;
 use ctrlxref::rebinds::{
-    DEVICES, MAX_HEADER_LABEL, Rebinds, action_key, action_paths, clear_device_rebinds, complete_blank_layout,
-    count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind, merge_rebinds,
-    parse_cell_inputs, profile_input, read_rebinds, rebind_device, set_device_rebinds, set_header_label,
-    set_keyboard_rebind, unbound_keyboard_actions,
+    DEVICES, MAX_HEADER_LABEL, MatchReason, Rebinds, Suggestion, action_key, action_paths, clear_device_rebinds,
+    complete_blank_layout, count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind,
+    merge_rebinds, move_action_rebinds, parse_cell_inputs, profile_input, read_rebinds, rebind_device, remove_action,
+    remove_unmatched, set_device_rebinds, set_header_label, set_keyboard_rebind, suggest_targets,
+    unbound_keyboard_actions, unmatched_actions,
 };
 use ctrlxref::search::{self, Place};
 use ctrlxref::xml_doc;
@@ -45,6 +46,10 @@ const LABEL_ATTRIBUTES: [&str; 4] = ["name", "id", "key", "action"];
 /// Read-only column with the profile's own bindings, space separated, so the device
 /// columns only hold rebinds and can all be edited.
 const DEFAULT_COLUMN: &str = "DEFAULT from: Data.p4k R/O";
+
+/// What messages call the open defaultProfile.xml: the actions of the installed game version,
+/// which rebind files, often made for an older version, are matched against.
+const MASTER_PROFILE: &str = "game engine current profile";
 
 /// Separates several bindings shown in one cell.
 const BINDING_SEPARATOR: &str = " | ";
@@ -143,7 +148,34 @@ enum Level {
 struct Toast {
     level: Level,
     text: String,
-    until: Instant,
+    /// When it goes away by itself; `None` stays until dismissed.
+    until: Option<Instant>,
+    /// Whether it is the warning about rebinds of actions the profile lacks, which stays with a
+    /// Review... button until they are dealt with or it is dismissed.
+    review: bool,
+}
+
+/// How many profile actions the Unmatched Rebinds box suggests for each action the profile lacks.
+const MAX_SUGGESTIONS: usize = 3;
+
+/// An action of the open rebind file that the profile lacks, in the Unmatched Rebinds box.
+struct UnmatchedRow {
+    /// `(actionmap name, action name)`.
+    key: (String, String),
+    inputs: Vec<String>,
+    /// Profile actions its rebinds may belong to, likeliest first, each with whether that action
+    /// already has rebinds of a device these rebind too, so both show as a conflict.
+    suggestions: Vec<(Suggestion, bool)>,
+}
+
+/// A button of the Unmatched Rebinds box.
+enum UnmatchedChange {
+    /// Moves the rebinds of the first action to the second.
+    Move((String, String), (String, String)),
+    Remove((String, String)),
+    /// Moves the rebinds of every action to its first suggestion.
+    ApplyAll,
+    RemoveAll,
 }
 
 /// What a dialog's confirm button does.
@@ -335,6 +367,8 @@ pub struct CtrlXrefApp {
     label_prompt: Option<LabelPrompt>,
     /// The label the box accepted, for the save box shown next.
     pending_copy_label: Option<String>,
+    /// The Unmatched Rebinds box, while it is open.
+    unmatched: Option<Vec<UnmatchedRow>>,
 }
 
 impl CtrlXrefApp {
@@ -378,12 +412,30 @@ impl CtrlXrefApp {
             control_names: None,
             label_prompt: None,
             pending_copy_label: None,
+            unmatched: None,
         }
     }
 
     fn notify(&mut self, level: Level, text: impl Into<String>) {
         let time = if level == Level::Error { ERROR_TOAST_TIME } else { TOAST_TIME };
-        self.toasts.push(Toast { level, text: text.into(), until: Instant::now() + time });
+        self.toasts.push(Toast { level, text: text.into(), until: Some(Instant::now() + time), review: false });
+        self.ctx.request_repaint();
+    }
+
+    /// Warns, until dismissed or dealt with, that the open rebind file has rebinds of actions the
+    /// profile lacks, with a Review... button for the Unmatched Rebinds box. `lead` starts the text.
+    fn warn_unmatched(&mut self, lead: &str) {
+        let count = self.document.as_ref().map_or(0, |doc| unmatched_actions(&doc.rebinds, &profile_actions(doc)).len());
+        self.toasts.retain(|toast| !toast.review);
+        if count == 0 {
+            return;
+        }
+        let text = format!(
+            "{lead}{count} rebound actions are not in the {MASTER_PROFILE} (defaultProfile.xml from \
+             Data.p4k), so the game ignores their bindings. The rebind file was probably made for an older \
+             game version, and these actions were renamed or moved since"
+        );
+        self.toasts.push(Toast { level: Level::Warning, text, until: None, review: true });
         self.ctx.request_repaint();
     }
 
@@ -417,6 +469,7 @@ impl CtrlXrefApp {
             Command::ExtractDefaults => self.extract_defaults(),
             Command::ShowUnusedCombos => self.show_unused_combos(),
             Command::ResolveConflicts => self.resolve_conflicts(),
+            Command::ResolveUnmatched => self.show_unmatched(),
             Command::ShowControlNames => self.show_control_names(),
             Command::AutofillKeyboard => self.autofill_keyboard(),
             Command::ExportCsv => self.export_csv(frame),
@@ -553,19 +606,8 @@ impl CtrlXrefApp {
             return;
         };
         let rebinds = read_rebinds(&root);
-        let actions: HashSet<(String, String)> =
-            doc.rows.iter().filter_map(|path| action_key(&doc.root, path)).collect();
-        let unmatched: Vec<String> = rebinds
-            .keys()
-            .filter(|key| !actions.contains(*key))
-            .map(|(map, action)| format!("{map}/{action}"))
-            .collect();
-        let note = format!(
-            "{} of {} rebinds matched from {}",
-            rebinds.len() - unmatched.len(),
-            rebinds.len(),
-            path.display()
-        );
+        let unmatched = unmatched_actions(&rebinds, &profile_actions(doc)).len();
+        let note = format!("{} of {} rebinds matched from {}", rebinds.len() - unmatched, rebinds.len(), path.display());
         doc.rebinds = rebinds;
         doc.rebind_path = Some(path);
         doc.rebind_root = Some(root);
@@ -575,18 +617,10 @@ impl CtrlXrefApp {
         self.refresh_table();
         self.update_title();
 
-        if unmatched.is_empty() {
+        if unmatched == 0 {
             self.notify(Level::Success, note);
         } else {
-            let mut unmatched = unmatched;
-            unmatched.sort();
-            let more = unmatched.len().saturating_sub(5);
-            unmatched.truncate(5);
-            let mut list = unmatched.join(", ");
-            if more > 0 {
-                list.push_str(&format!(" and {more} more"));
-            }
-            self.notify(Level::Warning, format!("{note}. Not in the profile: {list}"));
+            self.warn_unmatched(&format!("{note}. "));
         }
     }
 
@@ -625,21 +659,102 @@ impl CtrlXrefApp {
         }
         doc.rebinds = read_rebinds(rebind_root);
         let first_merge = !std::mem::replace(&mut doc.merged, true);
-        let actions: HashSet<(String, String)> =
-            doc.rows.iter().filter_map(|path| action_key(&doc.root, path)).collect();
-        let unmatched = read_rebinds(&other).keys().filter(|key| !actions.contains(*key)).count();
+        let unmatched = unmatched_actions(&read_rebinds(&other), &profile_actions(doc)).len();
         self.undo.push("merging a rebind file".into(), before, self.rebinds_modified);
         if let Some(step) = self.undo.0.last_mut() {
             step.first_merge = first_merge;
         }
         self.rebinds_modified = true;
         self.refresh_table();
-        let mut note = format!("Added {added} bindings from {}", path.display());
-        if unmatched > 0 {
-            note.push_str(&format!(", {unmatched} of its actions are not in the profile"));
-        }
-        note.push_str(". Conflicts are shown in red. Use Save Rebind Copy As to keep this");
+        let note = format!(
+            "Added {added} bindings from {}. Conflicts are shown in red. Use Save Rebind Copy As to keep this",
+            path.display()
+        );
         self.notify(Level::Success, note);
+        if unmatched > 0 {
+            self.warn_unmatched("After the merge, ");
+        }
+    }
+
+    /// Opens the Unmatched Rebinds box for the rebinds of actions the profile lacks, as Tools >
+    /// Resolve Unmatched Rebinds asks; or says that there are none.
+    fn show_unmatched(&mut self) {
+        if !self.has_profile() || !self.has_rebind_file() {
+            return;
+        }
+        let rows = self.document.as_ref().map(unmatched_rows).unwrap_or_default();
+        if rows.is_empty() {
+            self.toasts.retain(|toast| !toast.review);
+            self.notify(Level::Info, format!("All rebinds match the actions of the {MASTER_PROFILE}"));
+        } else {
+            self.unmatched = Some(rows);
+        }
+    }
+
+    /// Whether a rebind file is open; warns when not.
+    fn has_rebind_file(&mut self) -> bool {
+        if !self.can_merge() {
+            self.notify(
+                Level::Warning,
+                "No rebind file is open (File > Open Current Rebind File or Open Custom Rebind File...)",
+            );
+        }
+        self.can_merge()
+    }
+
+    /// Makes a change the Unmatched Rebinds box asks for in the open rebind file, as one step
+    /// that Ctrl+Z undoes. The box then lists what is left, and closes when nothing is.
+    fn apply_unmatched(&mut self, change: UnmatchedChange) {
+        let suggested: Vec<((String, String), (String, String))> = match &change {
+            UnmatchedChange::ApplyAll => self
+                .unmatched
+                .iter()
+                .flatten()
+                .filter_map(|row| Some((row.key.clone(), row.suggestions.first()?.0.target.clone())))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let actions = profile_actions(doc);
+        let Some(root) = &mut doc.rebind_root else {
+            return;
+        };
+        let before = root.clone();
+        let named = |(map, action): &(String, String)| format!("{map}/{action}");
+        let (label, message) = match change {
+            UnmatchedChange::Move(from, to) => {
+                let moved = move_action_rebinds(root, &from, &to);
+                (
+                    format!("moving the rebinds of {}", from.1),
+                    format!("Moved {moved} rebinds of {} to {}", named(&from), named(&to)),
+                )
+            }
+            UnmatchedChange::Remove(key) => {
+                let removed = remove_action(root, &key);
+                (format!("removing the rebinds of {}", key.1), format!("Removed {removed} rebinds of {}", named(&key)))
+            }
+            UnmatchedChange::ApplyAll => {
+                let moved: usize = suggested.iter().map(|(from, to)| move_action_rebinds(root, from, to)).sum();
+                (
+                    "moving rebinds to the suggested actions".into(),
+                    format!("Moved {moved} rebinds of {} actions to the suggested ones", suggested.len()),
+                )
+            }
+            UnmatchedChange::RemoveAll => {
+                let removed = remove_unmatched(root, &actions);
+                ("removing the unmatched rebinds".into(), format!("Removed {removed} actions not in the {MASTER_PROFILE}"))
+            }
+        };
+        if *root == before {
+            return;
+        }
+        doc.rebinds = read_rebinds(root);
+        self.undo.push(label, before, self.rebinds_modified);
+        self.rebinds_modified = true;
+        self.refresh_table();
+        self.notify(Level::Success, format!("{message}. Ctrl+Z undoes it. Save the rebind file to keep this"));
     }
 
     /// Starts going through the conflicting cells, editing one at a time.
@@ -662,6 +777,17 @@ impl CtrlXrefApp {
         }
         self.table.set_rows(&COLUMNS, &rows);
         self.update_search_counts();
+        // Once the profile has every rebound action, nothing is left to warn about or resolve.
+        let any_unmatched = self
+            .document
+            .as_ref()
+            .is_some_and(|doc| !unmatched_actions(&doc.rebinds, &profile_actions(doc)).is_empty());
+        if !any_unmatched {
+            self.toasts.retain(|toast| !toast.review);
+            self.unmatched = None;
+        } else if self.unmatched.is_some() {
+            self.unmatched = self.document.as_ref().map(unmatched_rows);
+        }
     }
 
     /// Everything the search can stop at, in its order, with the matches of its regular
@@ -969,7 +1095,10 @@ impl CtrlXrefApp {
     /// Whether a profile is open, which rebind files are matched against; warns when not.
     fn has_profile(&mut self) -> bool {
         if self.document.is_none() {
-            self.notify(Level::Warning, "Open the profile first (File > Open defaultProfile), then its rebind file");
+            self.notify(
+                Level::Warning,
+                format!("Open the {MASTER_PROFILE} first (File > Open defaultProfile), then a rebind file"),
+            );
         }
         self.document.is_some()
     }
@@ -1232,7 +1361,7 @@ impl CtrlXrefApp {
     /// dialog offers to open it.
     fn create_blank_rebind_file(&mut self, frame: &eframe::Frame) {
         let Some(doc) = &self.document else {
-            self.notify(Level::Warning, "Open the profile first (File > Open defaultProfile)");
+            self.notify(Level::Warning, format!("Open the {MASTER_PROFILE} first (File > Open defaultProfile)"));
             return;
         };
         let file_name = Path::new(game_dir::BLANK_LAYOUT).file_name().expect("a file name");
@@ -1280,7 +1409,7 @@ impl CtrlXrefApp {
         match xml_doc::save(&root, &path) {
             Ok(()) => {
                 let message = format!(
-                    "Created {} from {}: added {added} actions from the profile, \
+                    "Created {} from {}: added {added} actions from the {MASTER_PROFILE}, \
                      removed {removed} not in it.",
                     path.display(),
                     template_path.display()
@@ -1296,7 +1425,7 @@ impl CtrlXrefApp {
     /// the system list separator, so spreadsheets of the user's locale split them.
     fn export_csv(&mut self, frame: &eframe::Frame) {
         let Some(doc) = &self.document else {
-            self.notify(Level::Warning, "Open the profile first (File > Open defaultProfile)");
+            self.notify(Level::Warning, format!("Open the {MASTER_PROFILE} first (File > Open defaultProfile)"));
             return;
         };
         let csv = {
@@ -1326,7 +1455,7 @@ impl CtrlXrefApp {
     /// whatever the table's sort, to a JSON file picked with a save dialog.
     fn export_json(&mut self, frame: &eframe::Frame) {
         let Some(doc) = &self.document else {
-            self.notify(Level::Warning, "Open the profile first (File > Open defaultProfile)");
+            self.notify(Level::Warning, format!("Open the {MASTER_PROFILE} first (File > Open defaultProfile)"));
             return;
         };
         let json = tree_json(&doc.root, &doc.rows, &doc.strings, &self.table.headers(), self.table.document_rows());
@@ -1989,14 +2118,15 @@ impl CtrlXrefApp {
     }
 
     /// Draws the notifications in the bottom-right corner, newest at the bottom; a click
-    /// dismisses one.
+    /// dismisses one. The warning about unmatched rebinds has buttons to review or dismiss it.
     fn toasts(&mut self, ctx: &Context) {
         let now = Instant::now();
-        self.toasts.retain(|toast| toast.until > now);
+        self.toasts.retain(|toast| toast.until.is_none_or(|until| until > now));
         if self.toasts.is_empty() {
             return;
         }
         let mut dismissed = None;
+        let mut review = false;
         egui::Area::new(Id::unique("toasts"))
             .anchor(Align2::RIGHT_BOTTOM, [-12., -32.])
             .order(egui::Order::Foreground)
@@ -2009,18 +2139,28 @@ impl CtrlXrefApp {
                         Level::Warning => Color32::from_rgb(0x9a, 0x58, 0x00),
                         Level::Error => Color32::from_rgb(0x99, 0x1b, 0x1b),
                     };
-                    let response = egui::Frame::popup(ui.style())
-                        .fill(fill)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(RichText::new(&toast.text).color(Color32::WHITE))
-                                    .wrap()
-                                    .selectable(false),
-                            );
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if response.clicked() {
+                    let frame = egui::Frame::popup(ui.style()).fill(fill).show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(&toast.text).color(Color32::WHITE))
+                                .wrap()
+                                .selectable(false),
+                        );
+                        if toast.review {
+                            ui.add_space(4.);
+                            ui.horizontal(|ui| {
+                                if ui.button("Review...").on_hover_text("Move or remove these bindings").clicked() {
+                                    review = true;
+                                }
+                                let hover = "Hide this warning; the bindings stay in the file. \
+                                             Tools > Resolve Unmatched Rebinds... opens the list again";
+                                if ui.button("Ignore and keep").on_hover_text(hover).clicked() {
+                                    dismissed = Some(ix);
+                                }
+                            });
+                        }
+                    });
+                    // A click on the whole box would take the buttons' clicks.
+                    if !toast.review && frame.response.interact(egui::Sense::click()).clicked() {
                         dismissed = Some(ix);
                     }
                 }
@@ -2028,8 +2168,98 @@ impl CtrlXrefApp {
         if let Some(ix) = dismissed {
             self.toasts.remove(ix);
         }
-        if let Some(next) = self.toasts.iter().map(|toast| toast.until).min() {
+        if review {
+            self.show_unmatched();
+        }
+        if let Some(next) = self.toasts.iter().filter_map(|toast| toast.until).min() {
             ctx.request_repaint_after(next.saturating_duration_since(now));
+        }
+    }
+
+    /// Shows the Unmatched Rebinds box: each rebound action the profile lacks, with buttons that
+    /// move its rebinds to a suggested profile action or remove them.
+    fn unmatched_prompt(&mut self, ctx: &Context) {
+        if !self.dialogs.is_empty() || self.label_prompt.is_some() {
+            return;
+        }
+        let Some(rows) = &self.unmatched else {
+            return;
+        };
+        let mut change = None;
+        let mut close = false;
+        let response = egui::Modal::new(Id::unique("unmatched rebinds")).show(ctx, |ui| {
+            ui.set_width(720.);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("⚠").size(20.).color(ui.visuals().warn_fg_color));
+                ui.heading("Unmatched Rebinds");
+            });
+            ui.add_space(8.);
+            ui.label(format!(
+                "{} rebound actions are not in the {MASTER_PROFILE} (defaultProfile.xml from Data.p4k), \
+                 which is the master: the game ignores bindings of actions it lacks. The rebind file was \
+                 probably made for an older game version, and these actions were renamed or moved to another \
+                 actionmap since. Move their bindings to a suggested action of the {MASTER_PROFILE}, or remove \
+                 them.",
+                rows.len()
+            ));
+            ui.add_space(8.);
+            ScrollArea::vertical().max_height(420.).auto_shrink([false, true]).show(ui, |ui| {
+                for row in rows {
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(format!("{}/{}", row.key.0, row.key.1)).strong());
+                        ui.label(RichText::new(row.inputs.join(BINDING_SEPARATOR)).monospace());
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        for (suggestion, conflicts) in &row.suggestions {
+                            let why = match suggestion.reason {
+                                MatchReason::SameName => "same name".to_string(),
+                                MatchReason::Similar(percent) => format!("~{percent}%"),
+                            };
+                            let (map, action) = &suggestion.target;
+                            let warn = if *conflicts { "⚠ " } else { "" };
+                            let hover = if *conflicts {
+                                "Move the bindings to this action, which already has rebinds of the same device: \
+                                 both are kept and shown in red, to choose from in the table"
+                            } else {
+                                "Move the bindings to this action"
+                            };
+                            if ui.button(format!("{warn}→ {map}/{action} ({why})")).on_hover_text(hover).clicked() {
+                                change = Some(UnmatchedChange::Move(row.key.clone(), suggestion.target.clone()));
+                            }
+                        }
+                        if row.suggestions.is_empty() {
+                            ui.label(RichText::new("(no similar action)").weak());
+                        }
+                        if ui.button("Remove").on_hover_text("Remove these bindings from the rebind file").clicked() {
+                            change = Some(UnmatchedChange::Remove(row.key.clone()));
+                        }
+                    });
+                }
+            });
+            ui.add_space(12.);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let any_suggestion = rows.iter().any(|row| !row.suggestions.is_empty());
+                if ui
+                    .add_enabled(any_suggestion, egui::Button::new("Apply All Suggestions"))
+                    .on_hover_text("Moves the bindings of each action to its first suggestion")
+                    .clicked()
+                {
+                    change = Some(UnmatchedChange::ApplyAll);
+                }
+                if ui.button("Remove All").on_hover_text("Removes all these bindings from the rebind file").clicked() {
+                    change = Some(UnmatchedChange::RemoveAll);
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || response.should_close() {
+            self.unmatched = None;
+        }
+        if let Some(change) = change {
+            self.apply_unmatched(change);
         }
     }
 
@@ -2093,6 +2323,7 @@ impl eframe::App for CtrlXrefApp {
         self.search_dialog(&ctx);
         self.dialog(&ctx);
         self.label_prompt(&ctx);
+        self.unmatched_prompt(&ctx);
         self.toasts(&ctx);
         self.help_windows(&ctx);
         self.control_names_window(&ctx);
@@ -2106,6 +2337,36 @@ impl eframe::App for CtrlXrefApp {
             self.save_rebind_copy_with_label(&label, frame);
         }
     }
+}
+
+/// `(actionmap name, action name)` of each of the profile's actions, in table order.
+fn profile_actions(doc: &Document) -> Vec<(String, String)> {
+    doc.rows.iter().filter_map(|path| action_key(&doc.root, path)).collect()
+}
+
+/// The rows of the Unmatched Rebinds box: the open rebinds of actions the profile lacks, sorted,
+/// each with the profile actions suggested for them.
+fn unmatched_rows(doc: &Document) -> Vec<UnmatchedRow> {
+    let actions = profile_actions(doc);
+    let bound_devices = |inputs: &[String]| -> HashSet<&'static str> {
+        inputs.iter().filter(|input| !is_empty_rebind(input)).filter_map(|input| rebind_device(input)).collect()
+    };
+    unmatched_actions(&doc.rebinds, &actions)
+        .into_iter()
+        .map(|key| {
+            let inputs = doc.rebinds.get(&key).cloned().unwrap_or_default();
+            let devices = bound_devices(&inputs);
+            let suggestions = suggest_targets(&key, &actions, MAX_SUGGESTIONS)
+                .into_iter()
+                .map(|suggestion| {
+                    let has = doc.rebinds.get(&suggestion.target).map(|have| bound_devices(have)).unwrap_or_default();
+                    let conflicts = !has.is_disjoint(&devices);
+                    (suggestion, conflicts)
+                })
+                .collect();
+            UnmatchedRow { key, inputs, suggestions }
+        })
+        .collect()
 }
 
 /// Where a window with content of `size` goes, centered on the main window, given the main
@@ -2802,6 +3063,75 @@ mod tests {
         app.open_rebind_path(rebind);
         app.clear_column("keyboard");
         assert_eq!(rebinds_of(&app), ["gone: kb1_g"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Opens a rebind file in `app` with an action moved to another actionmap (`old/b`, which the
+    /// profile has as `m/b`) and one the profile has nothing like (`m/gone`).
+    fn open_unmatched(app: &mut super::CtrlXrefApp, rebind: &Path) {
+        std::fs::write(
+            rebind,
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_x"/></action><action name="gone"><rebind input="kb1_g"/></action></actionmap><actionmap name="old"><action name="b"><rebind input="kb1_b" multiTap="2"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        app.toasts.clear();
+        app.open_rebind_path(rebind.to_path_buf());
+    }
+
+    #[test]
+    fn unmatched_rebinds_warn_until_resolved_with_suggestions() {
+        let (mut app, dir, rebind) = app_with_rebinds("unmatched-warn");
+        open_unmatched(&mut app, &rebind);
+        let sticky: Vec<_> = app.toasts.iter().filter(|toast| toast.review).collect();
+        assert_eq!(sticky.len(), 1);
+        assert!(sticky[0].until.is_none() && sticky[0].level == super::Level::Warning);
+
+        app.show_unmatched();
+        let rows = app.unmatched.as_ref().expect("the box is open");
+        let keys: Vec<_> = rows.iter().map(|row| format!("{}/{}", row.key.0, row.key.1)).collect();
+        assert_eq!(keys, ["m/gone", "old/b"]);
+        assert!(rows[0].suggestions.is_empty());
+        assert_eq!(rows[1].suggestions[0].0.target, ("m".to_string(), "b".to_string()));
+        assert_eq!(rows[1].suggestions[0].0.reason, super::MatchReason::SameName);
+
+        // Moving puts the binding in the profile's row, and the box lists what is left.
+        app.apply_unmatched(super::UnmatchedChange::ApplyAll);
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: kb1_b", "gone: kb1_g"]);
+        assert!(app.rebinds_modified);
+        assert_eq!(app.unmatched.as_ref().unwrap().len(), 1);
+        assert!(app.toasts.iter().any(|toast| toast.review));
+        let xml = xml_doc::to_string(app.document.as_ref().unwrap().rebind_root.as_ref().unwrap()).unwrap();
+        assert!(xml.contains("multiTap"), "{xml}");
+
+        // Removing the last one closes the box and the warning.
+        app.apply_unmatched(super::UnmatchedChange::Remove(("m".into(), "gone".into())));
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: kb1_b"]);
+        assert!(app.unmatched.is_none());
+        assert!(!app.toasts.iter().any(|toast| toast.review));
+
+        // Each was one step back.
+        app.undo_change();
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: kb1_b", "gone: kb1_g"]);
+        assert!(!app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn remove_all_leaves_only_the_profiles_actions() {
+        let (mut app, dir, rebind) = app_with_rebinds("unmatched-remove-all");
+        open_unmatched(&mut app, &rebind);
+        app.show_unmatched();
+        app.apply_unmatched(super::UnmatchedChange::RemoveAll);
+        assert_eq!(rebinds_of(&app), ["a: kb1_x"]);
+        assert!(app.unmatched.is_none());
+        assert!(!app.toasts.iter().any(|toast| toast.review));
+        assert_eq!(app.undo.0.len(), 1);
+
+        // With nothing unmatched, the menu item only says so.
+        app.show_unmatched();
+        assert!(app.unmatched.is_none());
+        assert!(app.toasts.last().is_some_and(|toast| toast.level == super::Level::Info));
         std::fs::remove_dir_all(dir).ok();
     }
 

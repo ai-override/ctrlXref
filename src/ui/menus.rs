@@ -22,6 +22,7 @@ pub enum Command {
     ExtractDefaults,
     ShowUnusedCombos,
     ResolveConflicts,
+    ResolveUnmatched,
     ShowControlNames,
     AutofillKeyboard,
     ExportCsv,
@@ -114,6 +115,7 @@ pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool, can_merge:
     ui.menu_button("Tools", |ui| {
         item(ui, "Unused Key Combinations...", Command::ShowUnusedCombos);
         item(ui, "Resolve Control Conflicts", Command::ResolveConflicts);
+        item(ui, "Resolve Unmatched Rebinds...", Command::ResolveUnmatched);
         item(ui, "Show Control Names", Command::ShowControlNames);
         item(ui, "Autofill All Unbound Keyboard Controls", Command::AutofillKeyboard);
         ui.separator();

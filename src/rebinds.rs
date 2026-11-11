@@ -334,6 +334,192 @@ pub fn merge_rebinds(root: &mut Element, other: &Element) -> usize {
     added
 }
 
+/// Why a profile action is suggested for the rebinds of an action the profile lacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchReason {
+    /// The profile has an action of the same name in another actionmap: the action moved.
+    SameName,
+    /// The action names are this similar, in percent: the action was probably renamed.
+    Similar(u8),
+}
+
+/// A profile action, `(actionmap name, action name)`, that the rebinds of an action the profile
+/// lacks may belong to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub target: (String, String),
+    pub reason: MatchReason,
+}
+
+/// How similar, in percent, action names must be for [`suggest_targets`] to suggest one.
+const MIN_SIMILARITY: u8 = 70;
+
+/// The keys of `rebinds` that are not among the profile's `actions`, sorted. The game ignores
+/// their rebinds, which usually name an action renamed or moved since the file was made.
+pub fn unmatched_actions(rebinds: &Rebinds, actions: &[(String, String)]) -> Vec<(String, String)> {
+    let known: HashSet<&(String, String)> = actions.iter().collect();
+    let mut unmatched: Vec<(String, String)> = rebinds.keys().filter(|key| !known.contains(key)).cloned().collect();
+    unmatched.sort();
+    unmatched
+}
+
+/// `name` in lower case without underscores, as names are compared.
+fn normalized(name: &str) -> Vec<char> {
+    name.chars().filter(|c| *c != '_').flat_map(char::to_lowercase).collect()
+}
+
+/// How many characters must be inserted, removed or replaced to turn `a` into `b`.
+fn edit_distance(a: &[char], b: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(ca != cb)).min(above + 1).min(row[j] + 1);
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// How similar two [`normalized`] names are, in percent, or `None` when their lengths alone
+/// make them less than `at_least` percent similar, which spares comparing them.
+fn percent_similar(a: &[char], b: &[char], at_least: u8) -> Option<u8> {
+    let longest = a.len().max(b.len());
+    if longest == 0 {
+        return Some(100);
+    }
+    if (a.len().min(b.len())) * 100 < usize::from(at_least) * longest {
+        return None;
+    }
+    let same = longest - edit_distance(a, b);
+    Some(u8::try_from(same * 100 / longest).unwrap_or(100))
+}
+
+/// How similar two names are, in percent, ignoring case and underscores.
+fn similarity(a: &str, b: &str) -> u8 {
+    percent_similar(&normalized(a), &normalized(b), 0).unwrap_or(0)
+}
+
+/// At most `max` profile `actions` that the rebinds of `orphan`, an action the profile lacks, may
+/// belong to, the likeliest first: an action of the same name in another actionmap (it moved),
+/// the one in the most similar actionmap first; then actions with a name at least
+/// [`MIN_SIMILARITY`] percent similar (it was renamed), the same actionmap's first when as similar.
+pub fn suggest_targets(orphan: &(String, String), actions: &[(String, String)], max: usize) -> Vec<Suggestion> {
+    let (map, action) = orphan;
+    let name = normalized(action);
+    // Sorted by (same name, name similarity, same actionmap, actionmap similarity), best first.
+    let mut scored: Vec<((bool, u8, bool, u8), Suggestion)> = actions
+        .iter()
+        .filter(|target| *target != orphan)
+        .filter_map(|target| {
+            let same_name = target.1 == *action;
+            let name_score = match same_name {
+                true => 100,
+                false => percent_similar(&name, &normalized(&target.1), MIN_SIMILARITY)?,
+            };
+            if name_score < MIN_SIMILARITY {
+                return None;
+            }
+            let reason = if same_name { MatchReason::SameName } else { MatchReason::Similar(name_score) };
+            let key = (same_name, name_score, target.0 == *map, similarity(map, &target.0));
+            Some((key, Suggestion { target: target.clone(), reason }))
+        })
+        .collect();
+    // A stable sort keeps the profile's order among equals.
+    scored.sort_by_key(|(key, _)| std::cmp::Reverse(*key));
+    scored.into_iter().take(max).map(|(_, suggestion)| suggestion).collect()
+}
+
+/// Takes the `<action>` named `action` out of actionmap `map` in `element` or its descendants,
+/// removing that actionmap too when it is left without actions.
+fn take_action(element: &mut Element, map: &str, action: &str) -> Option<Element> {
+    for ix in 0..element.children.len() {
+        let Some(child) = element.children[ix].as_mut_element() else {
+            continue;
+        };
+        if !is_named(child, ACTIONMAP_TAG, map) {
+            if child.name != ACTIONMAP_TAG
+                && let Some(taken) = take_action(child, map, action)
+            {
+                return Some(taken);
+            }
+            continue;
+        }
+        let Some(at) = child
+            .children
+            .iter()
+            .position(|node| node.as_element().is_some_and(|a| is_named(a, "action", action)))
+        else {
+            continue;
+        };
+        let XMLNode::Element(taken) = child.children.remove(at) else {
+            unreachable!("the position of an element");
+        };
+        if !xml_doc::child_elements(child).any(|a| a.name == "action") {
+            element.children.remove(ix);
+        }
+        return Some(taken);
+    }
+    None
+}
+
+/// Removes the action `key` (`(actionmap name, action name)`) from a rebind file, and its
+/// actionmap when that is left without actions. Returns how many rebinds it had.
+pub fn remove_action(root: &mut Element, key: &(String, String)) -> usize {
+    take_action(root, &key.0, &key.1)
+        .map_or(0, |action| xml_doc::child_elements(&action).filter(|child| child.name == REBIND_TAG).count())
+}
+
+/// Removes from a rebind file every action not among the profile's `actions`, and the
+/// actionmaps left without actions. Returns how many actions were removed.
+pub fn remove_unmatched(root: &mut Element, actions: &[(String, String)]) -> usize {
+    let keep: HashSet<(&str, &str)> = actions.iter().map(|(map, action)| (map.as_str(), action.as_str())).collect();
+    remove_actions_not_in(root, &keep)
+}
+
+/// Moves the rebinds of action `from` to action `to` (both `(actionmap name, action name)`) in a
+/// rebind file, keeping their other attributes, and removes `from` (and its actionmap when that
+/// is left without actions). A rebind fills an empty rebind of its device that `to` has, like
+/// `kb1_ `. Inputs `to` already has are left out, and so is an empty rebind of a device `to` already
+/// rebinds. Creates `to` and its actionmap when needed. Returns how many rebinds were moved.
+pub fn move_action_rebinds(root: &mut Element, from: &(String, String), to: &(String, String)) -> usize {
+    let Some(source) = take_action(root, &from.0, &from.1) else {
+        return 0;
+    };
+    let mut have: Vec<String> = read_rebinds(root).remove(to).unwrap_or_default();
+    let rebinds: Vec<(Element, String)> = xml_doc::child_elements(&source)
+        .filter(|child| child.name == REBIND_TAG)
+        .filter_map(|rebind| Some((rebind.clone(), rebind_input(rebind)?)))
+        .filter(|(_, input)| !have.contains(input))
+        .collect();
+    let mut moved = 0;
+    for (rebind, input) in rebinds {
+        let device = rebind_device(&input);
+        if is_empty_rebind(&input) && have.iter().any(|old| rebind_device(old) == device) {
+            continue;
+        }
+        let target = action_mut(root, &to.0, &to.1);
+        let empty = target.children.iter().position(|node| {
+            node.as_element().is_some_and(|child| {
+                child.name == REBIND_TAG
+                    && rebind_input(child).is_some_and(|old| is_empty_rebind(&old) && rebind_device(&old) == device)
+            })
+        });
+        match empty {
+            Some(ix) => {
+                have.retain(|old| !(is_empty_rebind(old) && rebind_device(old) == device));
+                target.children[ix] = XMLNode::Element(rebind);
+            }
+            None => target.children.push(XMLNode::Element(rebind)),
+        }
+        have.push(input);
+        moved += 1;
+    }
+    moved
+}
+
 /// Binds `input` (a `kb...` keyboard input) to `action` of actionmap `map` in a rebind
 /// file: fills its empty keyboard rebind, or adds a `<rebind>`, creating the action and
 /// the actionmap when the file has none yet.
@@ -1006,5 +1192,99 @@ mod tests {
         assert_eq!(read_rebinds(&rebind_file)[&("m1".into(), "a".into())], ["gp1_ ", "kb1_g", "js1_ "]);
         let xml = xml_doc::to_string(&rebind_file).unwrap();
         assert!(xml.contains(r#"activationMode="press" input="kb1_g""#), "{xml}");
+    }
+
+    fn keys(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(map, action)| (map.to_string(), action.to_string())).collect()
+    }
+
+    #[test]
+    fn unmatched_actions_are_the_rebinds_the_profile_lacks_sorted() {
+        let root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="z"><rebind input="kb1_z"/></action><action name="a"><rebind input="kb1_a"/></action><action name="b"><rebind input="kb1_b"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let unmatched = unmatched_actions(&read_rebinds(&root), &keys(&[("m", "a")]));
+        assert_eq!(unmatched, keys(&[("m", "b"), ("m", "z")]));
+    }
+
+    #[test]
+    fn an_action_moved_to_another_actionmap_is_suggested_first() {
+        let actions = keys(&[
+            ("spaceship_general", "v_mining_mode_x"),
+            ("other", "v_mining_mode"),
+            ("spaceship_mining", "v_mining_mode"),
+        ]);
+        let suggestions = suggest_targets(&("spaceship_mining_old".into(), "v_mining_mode".into()), &actions, 3);
+        let targets: Vec<_> = suggestions.iter().map(|s| (s.target.0.as_str(), s.reason)).collect();
+        assert_eq!(targets[0], ("spaceship_mining", MatchReason::SameName));
+        assert_eq!(targets[1], ("other", MatchReason::SameName));
+        assert!(matches!(targets[2].1, MatchReason::Similar(_)));
+    }
+
+    #[test]
+    fn a_renamed_action_is_suggested_with_its_similarity() {
+        let actions = keys(&[("spaceship_general", "v_toggle_landing"), ("spaceship_general", "v_flight_ready")]);
+        let suggestions = suggest_targets(&("spaceship_general".into(), "v_flightready".into()), &actions, 3);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].target.1, "v_flight_ready");
+        assert_eq!(suggestions[0].reason, MatchReason::Similar(100));
+
+        let suggestions = suggest_targets(&("spaceship_general".into(), "v_flight_readyy".into()), &actions, 3);
+        assert!(matches!(suggestions[0].reason, MatchReason::Similar(percent) if (90..100).contains(&percent)));
+    }
+
+    #[test]
+    fn an_unrelated_name_gets_no_suggestion() {
+        let actions = keys(&[("m", "v_toggle_landing"), ("m", "v_flight_ready")]);
+        assert!(suggest_targets(&("m".into(), "pc_interaction_mode".into()), &actions, 3).is_empty());
+    }
+
+    #[test]
+    fn moving_rebinds_keeps_attributes_skips_duplicates_and_removes_the_source() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="old"><action name="gone"><rebind input="kb1_g" multiTap="2"/><rebind input="kb1_x"/><rebind input="js1_ "/></action></actionmap><actionmap name="new"><action name="here"><rebind input="kb1_x"/><rebind input="js1_button1"/><rebind input="gp1_ "/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let moved = move_action_rebinds(&mut root, &("old".into(), "gone".into()), &("new".into(), "here".into()));
+        // kb1_x is there already, and the empty js1_ would unbind js1_button1.
+        assert_eq!(moved, 1);
+        let rebinds = read_rebinds(&root);
+        assert_eq!(rebinds.len(), 1);
+        assert_eq!(rebinds[&("new".into(), "here".into())], ["kb1_x", "js1_button1", "gp1_ ", "kb1_g"]);
+        let xml = xml_doc::to_string(&root).unwrap();
+        assert!(xml.contains(r#"input="kb1_g" multiTap="2""#) || xml.contains(r#"multiTap="2" input="kb1_g""#), "{xml}");
+        assert!(!xml.contains("name=\"old\""), "{xml}");
+    }
+
+    #[test]
+    fn a_moved_rebind_fills_an_empty_one_and_creates_the_target() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="gone"><rebind input="gp1_a"/></action><action name="blank"><rebind input="gp1_ "/></action><action name="keep"><rebind input="kb1_k"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        assert_eq!(move_action_rebinds(&mut root, &("m".into(), "gone".into()), &("m".into(), "blank".into())), 1);
+        let rebinds = read_rebinds(&root);
+        assert_eq!(rebinds[&("m".into(), "blank".into())], ["gp1_a"]);
+        assert!(!rebinds.contains_key(&("m".into(), "gone".into())));
+
+        assert_eq!(move_action_rebinds(&mut root, &("m".into(), "keep".into()), &("n".into(), "new".into())), 1);
+        assert_eq!(read_rebinds(&root)[&("n".into(), "new".into())], ["kb1_k"]);
+    }
+
+    #[test]
+    fn removing_unmatched_actions_keeps_the_matched_ones() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_a"/></action><action name="gone"><rebind input="kb1_g"/></action></actionmap><actionmap name="old"><action name="x"><rebind input="kb1_x"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let mut single = root.clone();
+        assert_eq!(remove_action(&mut single, &("old".into(), "x".into())), 1);
+        assert!(!xml_doc::to_string(&single).unwrap().contains("name=\"old\""));
+
+        assert_eq!(remove_unmatched(&mut root, &keys(&[("m", "a")])), 2);
+        let rebinds = read_rebinds(&root);
+        assert_eq!(rebinds.keys().collect::<Vec<_>>(), [&("m".to_string(), "a".to_string())]);
+        assert!(!xml_doc::to_string(&root).unwrap().contains("name=\"old\""));
     }
 }
