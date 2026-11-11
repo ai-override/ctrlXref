@@ -15,6 +15,12 @@ use eframe::egui::{self, FontData, FontDefinitions, FontFamily, IconData, Viewpo
 
 use app::CtrlXrefApp;
 
+/// The application version, from `version.txt` through build.rs.
+pub const VERSION: &str = env!("CTRLXREF_VERSION");
+
+/// The main window's title without a file: the name and the version.
+pub const APP_TITLE: &str = concat!("ctrlXref ", env!("CTRLXREF_VERSION"));
+
 /// Font family for bold text: Segoe UI Bold when Windows has it, else the default font.
 pub const BOLD: &str = "bold";
 
@@ -22,7 +28,7 @@ pub const BOLD: &str = "bold";
 pub fn run(initial_file: Option<PathBuf>, initial_rebind_file: Option<PathBuf>) {
     let icon = window_icon();
     let mut viewport = ViewportBuilder::default()
-        .with_title("ctrlXref")
+        .with_title(APP_TITLE)
         .with_inner_size([1200., 800.])
         .with_min_inner_size([640., 400.]);
     if let Some(icon) = &icon {

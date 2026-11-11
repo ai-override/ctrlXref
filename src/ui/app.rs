@@ -36,6 +36,7 @@ use super::help::{self, HelpTopic};
 use super::menus::{self, Command, ThemeChoice};
 use super::search::{SearchAction, SearchDialog};
 use super::theme;
+use super::{APP_TITLE, VERSION};
 
 /// Tree id of the document root; descendants append `/<element index>` per level.
 const ROOT_ID: &str = "r";
@@ -440,15 +441,15 @@ impl CtrlXrefApp {
         self.ctx.request_repaint();
     }
 
-    /// Shows the open rebind file in the window title, or the profile while no rebind file
-    /// is open.
+    /// Shows the version and the open rebind file in the window title, or the profile while no
+    /// rebind file is open.
     fn update_title(&self) {
         let title = match &self.document {
             Some(doc) => {
                 let shown = doc.rebind_path.as_deref().unwrap_or(&doc.path);
-                format!("ctrlXref - {}", shown.display())
+                format!("{APP_TITLE} - {}", shown.display())
             }
-            None => "ctrlXref".to_string(),
+            None => APP_TITLE.to_string(),
         };
         self.ctx.send_viewport_cmd(ViewportCommand::Title(title));
     }
@@ -1858,6 +1859,8 @@ impl CtrlXrefApp {
                 if ui.button(icon).on_hover_text("Toggle light / dark theme").clicked() {
                     picked = Some(Command::ToggleTheme);
                 }
+                ui.label(RichText::new(format!("v{VERSION}")).small().weak())
+                    .on_hover_text(format!("ctrlXref version {VERSION}; Help > About ctrlXref tells more"));
             });
         });
         picked
