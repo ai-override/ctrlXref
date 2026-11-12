@@ -6,16 +6,18 @@
 use eframe::egui::{self, Margin, ScrollArea, Ui};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
-/// A help page, one per menu that has one.
+/// A help page, one per menu that has one, and one for the table's right-click menus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HelpTopic {
     File,
     Source,
     Tools,
+    /// The table's right-click menus, which belong to no menu of the menu bar.
+    ContextMenus,
 }
 
 impl HelpTopic {
-    pub const ALL: [HelpTopic; 3] = [Self::File, Self::Source, Self::Tools];
+    pub const ALL: [HelpTopic; 4] = [Self::File, Self::Source, Self::Tools, Self::ContextMenus];
 
     /// The window title.
     pub fn title(self) -> &'static str {
@@ -23,6 +25,7 @@ impl HelpTopic {
             Self::File => "ctrlXref Help - File Menu",
             Self::Source => "ctrlXref Help - Source Menu",
             Self::Tools => "ctrlXref Help - Tools Menu",
+            Self::ContextMenus => "ctrlXref Help - Context Menus",
         }
     }
 
@@ -32,6 +35,7 @@ impl HelpTopic {
             Self::File => include_str!("../../docs/help/file.md"),
             Self::Source => include_str!("../../docs/help/source.md"),
             Self::Tools => include_str!("../../docs/help/tools.md"),
+            Self::ContextMenus => include_str!("../../docs/help/context_menus.md"),
         }
     }
 

@@ -137,6 +137,21 @@ const SELECT_ALL_MENU_ITEM: &str = "Select All";
 /// The item of an editable cell's context menu that asks to clear the cell's whole column.
 const CLEAR_COLUMN_MENU_ITEM: &str = "Clear All Column Bindings";
 
+/// The item of an editable cell's context menu that asks to copy the default bindings into
+/// the cell's column, where an action has none of its own.
+const CLONE_DEFAULTS_MENU_ITEM: &str = "Clone default bindings";
+
+/// The submenu of an editable cell's context menu that asks to copy the default bindings into
+/// the cell's column for the device instance picked from it, like `js2_`.
+const CLONE_DEFAULTS_TO_MENU_ITEM: &str = "Clone default bindings to";
+
+/// The item of an editable cell's context menu that asks for a `*` wildcard pattern of
+/// bindings to remove from the cell's column.
+const REMOVE_BY_WILDCARDS_MENU_ITEM: &str = "Remove by * wildcards...";
+
+/// The device instances [`CLONE_DEFAULTS_TO_MENU_ITEM`] offers, from 1.
+const MAX_DEVICE_INSTANCE: u32 = 8;
+
 /// How far from the edge of the visible cells a selection drag starts scrolling, in rows.
 const DRAG_SCROLL_ZONE: f32 = 1.;
 
@@ -191,6 +206,11 @@ pub struct TableOutput {
     pub clear_column: Option<String>,
     /// The key of the column whose empty bindings the user asked to clear with the context menu.
     pub clear_empty_column: Option<String>,
+    /// The key of the column the user asked to fill with its default bindings with the context
+    /// menu, and the device instance picked for them in a column that asks for one.
+    pub clone_defaults_column: Option<(String, Option<u32>)>,
+    /// The key of the column the user asked to remove bindings from by a wildcard pattern.
+    pub wildcard_column: Option<String>,
     /// Whether resolving conflicts ended because none are left.
     pub conflicts_resolved: bool,
 }
@@ -206,6 +226,11 @@ pub struct AttributeTable {
     editable: HashSet<String>,
     /// The Clear Empty Bindings menu item text of each editable column that has one, by key.
     clear_empty_items: HashMap<String, String>,
+    /// Keys of the editable columns whose context menu offers [`CLONE_DEFAULTS_MENU_ITEM`].
+    clone_default_columns: HashSet<String>,
+    /// The editable columns whose context menu offers [`CLONE_DEFAULTS_TO_MENU_ITEM`], by key,
+    /// with the device prefix code of its submenu's instances, like `js` for `js1_`.
+    clone_default_instances: HashMap<String, String>,
     /// Keys of the columns whose titles keep their case in the uppercase headers.
     exact_titles: HashSet<String>,
     editing: Option<Editing>,
@@ -231,6 +256,8 @@ impl AttributeTable {
             sort: None,
             editable: HashSet::new(),
             clear_empty_items: HashMap::new(),
+            clone_default_columns: HashSet::new(),
+            clone_default_instances: HashMap::new(),
             exact_titles: HashSet::new(),
             editing: None,
             resolving: None,
@@ -358,6 +385,19 @@ impl AttributeTable {
     /// that asks to clear the column's empty bindings, such as `kb1_ `.
     pub fn set_clear_empty_items(&mut self, items: &[(&str, String)]) {
         self.clear_empty_items = items.iter().map(|(key, text)| (key.to_string(), text.clone())).collect();
+    }
+
+    /// Gives the editable `columns` a context menu item that asks to copy the default
+    /// bindings into the column.
+    pub fn set_clone_default_columns(&mut self, columns: &[&str]) {
+        self.clone_default_columns = columns.iter().map(|name| name.to_string()).collect();
+    }
+
+    /// Gives the editable `columns` (`(column key, device prefix code)`) a context submenu that
+    /// asks to copy the default bindings into the column for a device instance picked from it,
+    /// like `js2_` for the code `js`.
+    pub fn set_clone_default_instances(&mut self, columns: &[(&str, &str)]) {
+        self.clone_default_instances = columns.iter().map(|(key, code)| (key.to_string(), code.to_string())).collect();
     }
 
     /// Makes the titles of the columns with these keys keep their case in the dark theme,
@@ -791,6 +831,27 @@ impl AttributeTable {
                                                 out.clear_empty_column = Some(key.clone());
                                                 ui.close();
                                             }
+                                        }
+                                        if self.clone_default_columns.contains(key)
+                                            && ui.button(CLONE_DEFAULTS_MENU_ITEM).clicked()
+                                        {
+                                            out.clone_defaults_column = Some((key.clone(), None));
+                                            ui.close();
+                                        }
+                                        if let Some(code) = self.clone_default_instances.get(key) {
+                                            ui.menu_button(CLONE_DEFAULTS_TO_MENU_ITEM, |ui| {
+                                                for instance in 1..=MAX_DEVICE_INSTANCE {
+                                                    if ui.button(format!("{code}{instance}_")).clicked() {
+                                                        out.clone_defaults_column = Some((key.clone(), Some(instance)));
+                                                        ui.close();
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        let remove = egui::Button::new(REMOVE_BY_WILDCARDS_MENU_ITEM);
+                                        if ui.add_enabled(has_values, remove).clicked() {
+                                            out.wildcard_column = Some(key.clone());
+                                            ui.close();
                                         }
                                     }
                                 });

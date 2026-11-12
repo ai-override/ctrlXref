@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use ctrlxref::localization::Strings;
 use ctrlxref::rebinds::{
     DEVICES, MAX_HEADER_LABEL, MatchReason, Rebinds, Suggestion, action_key, action_paths, clear_device_rebinds,
-    clear_empty_device_rebinds, empty_rebind_label,
+    clear_empty_device_rebinds, clone_default_rebinds, device_prefix, empty_rebind_label, matching_rebinds,
+    remove_matching_rebinds,
     complete_blank_layout, count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind,
     merge_rebinds, move_action_rebinds, parse_cell_inputs, profile_input, read_rebinds, rebind_device, remove_action,
     remove_unmatched, set_device_rebinds, set_header_label, set_keyboard_rebind, suggest_targets,
@@ -55,6 +56,11 @@ const MASTER_PROFILE: &str = "game engine current profile";
 
 /// Separates several bindings shown in one cell.
 const BINDING_SEPARATOR: &str = " | ";
+
+/// The device columns whose context menu can clone the default bindings into them directly.
+/// Not the joystick: its defaults don't say which of several sticks they are for, so its menu
+/// asks for the stick instead.
+const CLONE_DEFAULT_DEVICES: [&str; 3] = [DEVICES[0], DEVICES[1], DEVICES[3]];
 
 /// The table's columns, in this order; other action attributes are not shown.
 const COLUMNS: [&str; 10] = [
@@ -316,6 +322,15 @@ impl Dialog {
     }
 }
 
+/// The Remove by * wildcards box of a device column, asking for the pattern of the bindings
+/// to remove.
+struct WildcardPrompt {
+    device: String,
+    text: String,
+    /// Set until the field has taken the focus.
+    focus: bool,
+}
+
 /// The box Save Rebind Copy As shows first, asking for the copy's header label.
 struct LabelPrompt {
     text: String,
@@ -373,6 +388,8 @@ pub struct CtrlXrefApp {
     control_names: Option<ControlNamesWindow>,
     /// The Save Rebind Copy As label box, while it is open.
     label_prompt: Option<LabelPrompt>,
+    /// The Remove by * wildcards box, while it is open.
+    wildcard_prompt: Option<WildcardPrompt>,
     /// The label the box accepted, for the save box shown next.
     pending_copy_label: Option<String>,
     /// The Unmatched Rebinds box, while it is open.
@@ -398,6 +415,9 @@ impl CtrlXrefApp {
             .map(|device| (*device, format!("Clear all {} empty bindings", empty_rebind_label(device))))
             .collect();
         table.set_clear_empty_items(&clear_empty);
+        table.set_clone_default_columns(&CLONE_DEFAULT_DEVICES);
+        // The joystick's defaults don't say which stick they are for, so the user picks it.
+        table.set_clone_default_instances(&[(DEVICES[2], "js")]);
         table.set_exact_titles(&[DEFAULT_COLUMN]);
         let saved_game_dir = game_dir::load_saved();
         let game_version = saved_game_dir.as_deref().and_then(game_dir::game_version);
@@ -428,6 +448,7 @@ impl CtrlXrefApp {
             save_as_after: None,
             control_names: None,
             label_prompt: None,
+            wildcard_prompt: None,
             pending_copy_label: None,
             unmatched: None,
         }
@@ -1059,6 +1080,95 @@ impl CtrlXrefApp {
             format!(
                 "Cleared {cleared} {device} bindings; those actions now use their defaults. \
                  Ctrl+Z brings them back. Save the rebind file to keep this"
+            ),
+        );
+    }
+
+    /// Copies the default `device` bindings of the actions in the table into the rebind file,
+    /// as the context menu asks, where an action has no `device` rebind of its own yet. They go
+    /// to device `instance` when the menu asked for one, like joystick 2 for `js2_`.
+    /// Ctrl+Z takes them back out.
+    fn clone_default_column(&mut self, device: &str, instance: Option<u32>) {
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(rebind_root) = &mut doc.rebind_root else {
+            self.notify(
+                Level::Warning,
+                "Open a rebind file first (File > Open Current Rebind File or Open Custom Rebind File...); \
+                 the default bindings are copied into it",
+            );
+            return;
+        };
+        let before = rebind_root.clone();
+        let cloned = clone_default_rebinds(rebind_root, &doc.root, &doc.rows, &doc.rebinds, device, instance);
+        if cloned == 0 {
+            self.notify(Level::Info, format!("No action without {device} bindings has a default {device} binding"));
+            return;
+        }
+        doc.rebinds = read_rebinds(rebind_root);
+        self.undo.push(format!("cloning the default {device} bindings"), before, self.rebinds_modified);
+        self.rebinds_modified = true;
+        self.refresh_table();
+        let target = match instance {
+            Some(instance) => format!(" to {}{instance}_", &device_prefix(device)[..2]),
+            None => String::new(),
+        };
+        self.notify(
+            Level::Success,
+            format!(
+                "Copied the default {device} bindings of {cloned} actions{target}; actions with {device} \
+                 bindings of their own kept them. Ctrl+Z takes them back out. Save the rebind file to keep this"
+            ),
+        );
+    }
+
+    /// Opens the Remove by * wildcards box for the `device` column, which needs an open rebind file.
+    fn ask_wildcard_pattern(&mut self, device: String) {
+        if !self.document.as_ref().is_some_and(|doc| doc.rebind_root.is_some()) {
+            self.notify(
+                Level::Warning,
+                "Open a rebind file first (File > Open Current Rebind File or Open Custom Rebind File...); \
+                 the bindings are removed from it",
+            );
+            return;
+        }
+        self.wildcard_prompt = Some(WildcardPrompt { device, text: String::new(), focus: true });
+    }
+
+    /// The actions in the table, as `(actionmap name, action name)`.
+    fn table_actions(&self) -> Vec<(String, String)> {
+        self.document
+            .as_ref()
+            .map(|doc| doc.rows.iter().filter_map(|path| action_key(&doc.root, path)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Removes the `device` rebinds that match the `*` wildcard `pattern` from the actions in
+    /// the table, keeping their other rebinds. Ctrl+Z brings them back.
+    fn remove_by_wildcards(&mut self, device: &str, pattern: &str) {
+        let actions = self.table_actions();
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(rebind_root) = &mut doc.rebind_root else {
+            return;
+        };
+        let before = rebind_root.clone();
+        let removed = remove_matching_rebinds(rebind_root, &doc.rebinds, &actions, device, pattern);
+        if removed == 0 {
+            self.notify(Level::Info, format!("No {device} binding matches {pattern}"));
+            return;
+        }
+        doc.rebinds = read_rebinds(rebind_root);
+        self.undo.push(format!("removing the {device} bindings matching {pattern}"), before, self.rebinds_modified);
+        self.rebinds_modified = true;
+        self.refresh_table();
+        self.notify(
+            Level::Success,
+            format!(
+                "Removed {removed} {device} bindings matching {pattern}. Ctrl+Z brings them back. \
+                 Save the rebind file to keep this"
             ),
         );
     }
@@ -2030,6 +2140,12 @@ impl CtrlXrefApp {
         if let Some(column) = &out.clear_empty_column {
             self.ask_clear_empty_column(column);
         }
+        if let Some((column, instance)) = &out.clone_defaults_column {
+            self.clone_default_column(column, *instance);
+        }
+        if let Some(column) = out.wildcard_column {
+            self.ask_wildcard_pattern(column);
+        }
         if let Some(row_ix) = out.clicked_row {
             self.select_in_table(row_ix);
         }
@@ -2200,6 +2316,84 @@ impl CtrlXrefApp {
         }
     }
 
+    /// Shows the Remove by * wildcards box: a pattern field, how many bindings it matches with
+    /// a few of them, and Go and Cancel. Enter is Go, Escape cancels.
+    fn wildcard_prompt(&mut self, ctx: &Context) {
+        if !self.dialogs.is_empty() || self.label_prompt.is_some() {
+            return;
+        }
+        let actions = self.table_actions();
+        let (Some(prompt), Some(doc)) = (&mut self.wildcard_prompt, &self.document) else {
+            return;
+        };
+        let device = prompt.device.clone();
+        let pattern = prompt.text.trim().to_string();
+        let matches: Vec<String> = if pattern.is_empty() {
+            Vec::new()
+        } else {
+            matching_rebinds(&doc.rebinds, &actions, &device, &pattern)
+                .map(|((_, action), input)| format!("{input}   {action}"))
+                .collect()
+        };
+        let mut close = false;
+        let mut go = false;
+        let response = egui::Modal::new(Id::unique("wildcard remove")).show(ctx, |ui| {
+            ui.set_width(480.);
+            ui.heading(format!("Remove {device} bindings by * wildcards"));
+            ui.add_space(8.);
+            ui.label(
+                "Removes the bindings of this column that match the whole pattern; * stands for any text. \
+                 *button* matches js4_button24, and *_lalt matches kb1_lalt but not kb1_lalt+i. \
+                 Case doesn't matter.",
+            );
+            ui.add_space(8.);
+            let output = TextEdit::singleline(&mut prompt.text)
+                .id_salt("wildcard pattern")
+                .hint_text("*button*")
+                .desired_width(f32::INFINITY)
+                .show(ui);
+            if prompt.focus && !ui.is_sizing_pass() {
+                prompt.focus = false;
+                output.response.response.request_focus();
+            }
+            let entered = output.response.response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+            ui.add_space(4.);
+            let summary = match matches.len() {
+                0 if pattern.is_empty() => "Type a pattern".to_string(),
+                0 => "No binding matches".to_string(),
+                1 => "1 binding matches:".to_string(),
+                count => format!("{count} bindings match:"),
+            };
+            ui.label(RichText::new(summary).weak());
+            if !matches.is_empty() {
+                ScrollArea::vertical().max_height(160.).auto_shrink([false, true]).show(ui, |ui| {
+                    for line in &matches {
+                        ui.label(RichText::new(line).monospace());
+                    }
+                });
+            }
+            ui.add_space(12.);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let go_button = ui.add_enabled(!matches.is_empty(), egui::Button::new("Go"));
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+                if !matches.is_empty() && (go_button.clicked() || entered) {
+                    go = true;
+                    close = true;
+                } else if entered {
+                    output.response.response.request_focus();
+                }
+            });
+        });
+        if close || response.should_close() {
+            self.wildcard_prompt = None;
+        }
+        if go {
+            self.remove_by_wildcards(&device, &pattern);
+        }
+    }
+
     /// Draws the notifications in the bottom-right corner, newest at the bottom; a click
     /// dismisses one. The warning about unmatched rebinds has buttons to review or dismiss it.
     fn toasts(&mut self, ctx: &Context) {
@@ -2262,7 +2456,7 @@ impl CtrlXrefApp {
     /// Shows the Unmatched Rebinds box: each rebound action the profile lacks, with buttons that
     /// move its rebinds to a suggested profile action or remove them.
     fn unmatched_prompt(&mut self, ctx: &Context) {
-        if !self.dialogs.is_empty() || self.label_prompt.is_some() {
+        if !self.dialogs.is_empty() || self.label_prompt.is_some() || self.wildcard_prompt.is_some() {
             return;
         }
         let Some(rows) = &self.unmatched else {
@@ -2410,6 +2604,7 @@ impl eframe::App for CtrlXrefApp {
         self.search_dialog(&ctx);
         self.dialog(&ctx);
         self.label_prompt(&ctx);
+        self.wildcard_prompt(&ctx);
         self.unmatched_prompt(&ctx);
         self.toasts(&ctx);
         self.help_windows(&ctx);
@@ -3177,6 +3372,44 @@ mod tests {
         assert_eq!(rebinds_of(&app), ["a: kb1_x"]);
 
         app.undo_change();
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), before);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn cloning_defaults_keeps_existing_rebinds_and_undo_takes_them_out() {
+        let (mut app, dir, _) = app_with_rebinds("clone-defaults");
+        let before = rebinds_of(&app);
+        // a has its own keyboard rebind kb1_x, so its default kb1_a isn't copied; b has no default.
+        app.clone_default_column("keyboard", None);
+        assert_eq!(rebinds_of(&app), before);
+        assert!(!app.rebinds_modified);
+
+        edit(&mut app, 0, "keyboard", "");
+        app.clone_default_column("keyboard", None);
+        assert_eq!(rebinds_of(&app), ["a: kb1_a"]);
+        app.undo_change();
+        assert!(rebinds_of(&app).is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn removing_by_wildcards_and_undo_brings_them_back() {
+        let (mut app, dir, _) = app_with_rebinds("wildcards");
+        edit(&mut app, 0, "keyboard", "kb1_lalt | kb1_lalt+i");
+        edit(&mut app, 1, "keyboard", "kb1_x");
+        let before = rebinds_of(&app);
+
+        app.ask_wildcard_pattern("keyboard".into());
+        assert!(app.wildcard_prompt.is_some());
+        app.wildcard_prompt = None;
+
+        app.remove_by_wildcards("keyboard", "*_lalt");
+        assert_eq!(rebinds_of(&app), ["a: kb1_lalt+i", "b: kb1_x"]);
+        app.remove_by_wildcards("keyboard", "nothing*");
+        assert_eq!(rebinds_of(&app), ["a: kb1_lalt+i", "b: kb1_x"]);
+
         app.undo_change();
         assert_eq!(rebinds_of(&app), before);
         std::fs::remove_dir_all(dir).ok();

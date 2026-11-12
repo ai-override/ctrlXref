@@ -126,6 +126,7 @@ pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool, can_merge:
         item(ui, "File Menu", Command::Help(HelpTopic::File));
         item(ui, "Source Menu", Command::Help(HelpTopic::Source));
         item(ui, "Tools Menu", Command::Help(HelpTopic::Tools));
+        item(ui, "Context Menus", Command::Help(HelpTopic::ContextMenus));
         ui.separator();
         item(ui, "About ctrlXref", Command::About);
     });

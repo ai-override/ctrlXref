@@ -20,6 +20,12 @@ a game folder, ctrlXref doesn't save it and lists what is OK and what is missing
 The `Data` folder doesn't have to exist yet. It is created under the selected
 `StarCitizen` folder when the files are extracted from the `Data.p4k` package.
 
+ctrlXref works with the game's **LIVE** version only; PTU and other test channels are not
+handled. To use the same controls on the PTU, copy your rebind files from
+`<game folder>\LIVE\user\client\0\controls\mappings` to the same folder under `PTU` yourself.
+A PTU build may have new, changed or removed actionmaps and actions, and ctrlXref doesn't
+deal with those.
+
 With the game folder set, ctrlXref can:
 
 - open the extracted `Data\Libs\Config\defaultProfile.xml` by itself at startup

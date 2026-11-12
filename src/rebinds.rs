@@ -326,6 +326,152 @@ pub fn clear_empty_device_rebinds(
     cleared
 }
 
+/// Whether the whole of rebind `input` matches `pattern`, where `*` stands for any text, none
+/// included, and case doesn't matter: `*button*` matches `js4_button24`, and `*_lalt` matches
+/// `kb1_lalt` but not `kb1_lalt+i`. The input's surrounding spaces are ignored, so `kb1_`
+/// matches the empty rebind `kb1_ `. A pattern without `*` must match the input exactly.
+pub fn wildcard_match(pattern: &str, input: &str) -> bool {
+    let pattern = pattern.trim().to_lowercase();
+    let input = input.trim().to_lowercase();
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if parts.len() == 1 {
+        return input == first;
+    }
+    if input.len() < first.len() + last.len() || !input.starts_with(first) || !input.ends_with(last) {
+        return false;
+    }
+    // The middle parts, in order, in what is between the first and the last part.
+    let mut rest = &input[first.len()..input.len() - last.len()];
+    for part in &parts[1..parts.len() - 1] {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The `device` rebinds of `actions` (`(actionmap name, action name)`) in `rebinds` that
+/// [`wildcard_match`] `pattern`, as `(action key, input)`.
+pub fn matching_rebinds<'a>(
+    rebinds: &'a Rebinds,
+    actions: &'a [(String, String)],
+    device: &'a str,
+    pattern: &'a str,
+) -> impl Iterator<Item = (&'a (String, String), &'a String)> {
+    actions.iter().flat_map(move |key| {
+        rebinds
+            .get(key)
+            .into_iter()
+            .flatten()
+            .filter(move |input| rebind_device(input) == Some(device) && wildcard_match(pattern, input))
+            .map(move |input| (key, input))
+    })
+}
+
+/// Removes the `device` rebinds of `actions` that [`wildcard_match`] `pattern` from a rebind
+/// file whose inputs are `rebinds`, keeping the device's others. Returns how many there were.
+pub fn remove_matching_rebinds(
+    root: &mut Element,
+    rebinds: &Rebinds,
+    actions: &[(String, String)],
+    device: &str,
+    pattern: &str,
+) -> usize {
+    let mut removed = 0;
+    for key in actions {
+        let Some(inputs) = rebinds.get(key) else {
+            continue;
+        };
+        let of_device: Vec<&String> = inputs.iter().filter(|input| rebind_device(input) == Some(device)).collect();
+        let kept: Vec<String> =
+            of_device.iter().filter(|input| !wildcard_match(pattern, input)).map(|input| input.to_string()).collect();
+        if kept.len() < of_device.len() {
+            set_device_rebinds(root, &key.0, &key.1, device, &kept);
+            removed += of_device.len() - kept.len();
+        }
+    }
+    removed
+}
+
+/// Copies the profile's default `device` bindings of the actions at `rows` (paths in `profile`)
+/// into a rebind file whose inputs are `rebinds`, as `device` rebinds with the device prefix,
+/// like `kb1_w`. A joystick's defaults don't say which stick they are for, so they go to
+/// stick `instance` (`js2_` for 2), or to `js1_` without one. An action that already has a
+/// `device` rebind, an empty one like `kb1_ ` and another stick's included, keeps it; so does
+/// one without a default for `device`. Returns how many actions got their defaults.
+pub fn clone_default_rebinds(
+    root: &mut Element,
+    profile: &Element,
+    rows: &[Vec<usize>],
+    rebinds: &Rebinds,
+    device: &str,
+    instance: Option<u32>,
+) -> usize {
+    let mut cloned = 0;
+    for path in rows {
+        let (Some(key), Some(action)) = (action_key(profile, path), xml_doc::element_at(profile, path)) else {
+            continue;
+        };
+        if rebinds.get(&key).is_some_and(|inputs| inputs.iter().any(|input| rebind_device(input) == Some(device))) {
+            continue;
+        }
+        let default = default_inputs(action, device);
+        // A blank default binds nothing, and one for another device can't be a rebind of this one.
+        match parse_cell_inputs(device, &default.join(","), &[]) {
+            Ok(inputs) if !inputs.is_empty() => {
+                let inputs: Vec<String> = match instance {
+                    Some(instance) => inputs.iter().map(|input| with_instance(input, instance)).collect(),
+                    None => inputs,
+                };
+                set_device_rebinds(root, &key.0, &key.1, device, &inputs);
+                cloned += 1;
+            }
+            _ => {}
+        }
+    }
+    cloned
+}
+
+/// The profile's default `device` inputs of `action`, for cloning into rebinds. The profile
+/// gives some mouse controls as keyboard bindings, like `keyboard="mouse1"`: those are left
+/// out of the keyboard's and added to the mouse's, after the mouse's own.
+fn default_inputs(action: &Element, device: &str) -> Vec<String> {
+    let split = |device: &str| -> Vec<String> {
+        profile_input(action, device)
+            .map(|value| value.split(',').map(|input| input.trim().to_string()).filter(|input| !input.is_empty()).collect())
+            .unwrap_or_default()
+    };
+    match device {
+        "keyboard" => split(device).into_iter().filter(|input| !ends_in_mouse_control(input)).collect(),
+        "mouse" => {
+            let mut inputs = split(device);
+            inputs.extend(split(DEVICES[0]).into_iter().filter(|input| ends_in_mouse_control(input)));
+            inputs
+        }
+        _ => split(device),
+    }
+}
+
+/// The prefixed rebind `input` with its device instance set to `instance`: `js1_x` for 3 is `js3_x`.
+fn with_instance(input: &str, instance: u32) -> String {
+    match input.split_once('_') {
+        Some((head, rest)) if head.len() >= 2 => format!("{}{instance}_{rest}", &head[..2]),
+        _ => input.to_string(),
+    }
+}
+
+/// Whether `input` ends in a mouse control, like `mouse1`, `lalt+mouse2` or `kb1_mwheel_up`.
+fn ends_in_mouse_control(input: &str) -> bool {
+    let control = input.rsplit('+').next().unwrap_or(input).trim();
+    let control = match prefixed_device(control) {
+        Some(_) => control.split_once('_').map_or(control, |(_, name)| name),
+        None => control,
+    };
+    is_mouse_control(control)
+}
+
 /// How the empty rebinds of a device column are written in its Clear menu item: `kb1_ `,
 /// `mo1_ `, `jsx_ ` (any joystick) and `gp1_ `.
 pub fn empty_rebind_label(device: &str) -> &'static str {
@@ -1187,6 +1333,115 @@ mod tests {
         assert!(xml_doc::to_string(&root).unwrap().contains(r#"activationMode="hold""#));
         assert_eq!(clear_empty_device_rebinds(&mut root, &after, &actions, "keyboard"), 0);
         assert_eq!(empty_rebind_label("joystick"), "jsx_");
+    }
+
+    #[test]
+    fn cloning_defaults_fills_only_actions_without_rebinds_of_the_device() {
+        let profile = xml_doc::from_str(
+            r#"<profile><actionmap name="m">
+                <action name="a" keyboard="w" mouse="mouse1"/>
+                <action name="b" keyboard="lalt+s"/>
+                <action name="c" keyboard=" "/>
+                <action name="d"><keyboard><inputdata input="x"/><inputdata input="y"/></keyboard></action>
+                <action name="e" keyboard="e"/>
+            </actionmap></profile>"#,
+        )
+        .unwrap();
+        let rows: Vec<Vec<usize>> = (0..5).map(|ix| vec![0, ix]).collect();
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="mo1_mouse2"/></action><action name="b"><rebind input="kb1_q"/></action><action name="e"><rebind input="kb1_ "/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let have = read_rebinds(&root);
+        // b keeps its own binding, e its empty one, and c has no default.
+        assert_eq!(clone_default_rebinds(&mut root, &profile, &rows, &have, "keyboard", None), 2);
+        let after = read_rebinds(&root);
+        let key = |action: &str| ("m".to_string(), action.to_string());
+        assert_eq!(after[&key("a")], ["mo1_mouse2", "kb1_w"]);
+        assert_eq!(after[&key("b")], ["kb1_q"]);
+        assert!(!after.contains_key(&key("c")));
+        assert_eq!(after[&key("d")], ["kb1_x", "kb1_y"]);
+        assert_eq!(after[&key("e")], ["kb1_ "]);
+        // a already has a mouse rebind.
+        assert_eq!(clone_default_rebinds(&mut root, &profile, &rows, &after, "mouse", None), 0);
+    }
+
+    #[test]
+    fn wildcards_match_the_whole_input() {
+        assert!(wildcard_match("*button*", "js4_button24"));
+        assert!(wildcard_match("*_lalt", "kb1_lalt"));
+        assert!(!wildcard_match("*_lalt", "kb1_lalt+i"));
+        assert!(wildcard_match("kb1_*+i", "kb1_lalt+i"));
+        assert!(wildcard_match("js*_button*", "js2_button3"));
+        assert!(!wildcard_match("js*_button*", "js2_x"));
+        assert!(wildcard_match("*", "kb1_w"));
+        assert!(wildcard_match("KB1_W", "kb1_w"));
+        assert!(!wildcard_match("kb1_w", "kb1_wx"));
+        assert!(wildcard_match("kb1_", "kb1_ "));
+        // The first and last parts can't overlap: `a*a` needs two a's.
+        assert!(!wildcard_match("a*a", "a"));
+        assert!(wildcard_match("a*a", "aa"));
+    }
+
+    #[test]
+    fn removing_by_wildcards_keeps_non_matching_and_other_devices() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_lalt"/><rebind input="kb1_lalt+i" multiTap="2"/><rebind input="mo1_lalt"/></action><action name="b"><rebind input="kb1_ralt"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let have = read_rebinds(&root);
+        let actions = [("m".to_string(), "a".to_string()), ("m".to_string(), "b".to_string())];
+        assert_eq!(matching_rebinds(&have, &actions, "keyboard", "*alt").count(), 2);
+        assert_eq!(remove_matching_rebinds(&mut root, &have, &actions, "keyboard", "*alt"), 2);
+        let after = read_rebinds(&root);
+        assert_eq!(after[&actions[0]], ["kb1_lalt+i", "mo1_lalt"]);
+        assert!(!after.contains_key(&actions[1]));
+        assert!(xml_doc::to_string(&root).unwrap().contains(r#"multiTap="2""#));
+    }
+
+    #[test]
+    fn cloning_joystick_defaults_goes_to_the_chosen_stick() {
+        let profile = xml_doc::from_str(
+            r#"<profile><actionmap name="m">
+                <action name="a" joystick="button1"/>
+                <action name="b" joystick="js1_x, lalt+button2"/>
+                <action name="c" joystick="button3"/>
+            </actionmap></profile>"#,
+        )
+        .unwrap();
+        let rows = vec![vec![0, 0], vec![0, 1], vec![0, 2]];
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="c"><rebind input="js1_button9"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let have = read_rebinds(&root);
+        // c has a joystick rebind of its own, on another stick.
+        assert_eq!(clone_default_rebinds(&mut root, &profile, &rows, &have, "joystick", Some(2)), 2);
+        let after = read_rebinds(&root);
+        let key = |action: &str| ("m".to_string(), action.to_string());
+        assert_eq!(after[&key("a")], ["js2_button1"]);
+        assert_eq!(after[&key("b")], ["js2_x", "js2_lalt+button2"]);
+        assert_eq!(after[&key("c")], ["js1_button9"]);
+    }
+
+    #[test]
+    fn cloning_moves_keyboard_mouse_defaults_to_the_mouse() {
+        let profile = xml_doc::from_str(
+            r#"<profile><actionmap name="m">
+                <action name="q" activationMode="delayed_press" keyboard="mouse1"/>
+                <action name="r" keyboard="r, lalt+mouse2" mouse="mwheel_up"/>
+            </actionmap></profile>"#,
+        )
+        .unwrap();
+        let rows = vec![vec![0, 0], vec![0, 1]];
+        let mut root = xml_doc::from_str("<ActionMaps/>").unwrap();
+        assert_eq!(clone_default_rebinds(&mut root, &profile, &rows, &Rebinds::new(), "keyboard", None), 1);
+        let have = read_rebinds(&root);
+        assert_eq!(clone_default_rebinds(&mut root, &profile, &rows, &have, "mouse", None), 2);
+        let after = read_rebinds(&root);
+        let key = |action: &str| ("m".to_string(), action.to_string());
+        assert_eq!(after[&key("q")], ["mo1_mouse1"]);
+        assert_eq!(after[&key("r")], ["kb1_r", "mo1_mwheel_up", "mo1_lalt+mouse2"]);
     }
 
     #[test]

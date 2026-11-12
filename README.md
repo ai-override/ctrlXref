@@ -39,6 +39,12 @@ ctrlXref writes only to rebind files. It never changes `Data.p4k` or `defaultPro
 - The [unp4k tools](#install-the-unp4k-tools), to extract the default controls from the game data
 - [Rust](https://www.rust-lang.org/tools/install) (current stable, with the MSVC toolchain), to build from source
 
+> [!NOTE]
+> ctrlXref works with the **LIVE** version of the game only. It does not handle **PTU** (or other test channel) installations.
+> If you want the same controls there, copy your LIVE rebind files from `StarCitizen\LIVE\user\client\0\controls\mappings\`
+> to the same folder under `StarCitizen\PTU\` yourself. A PTU build may have new, changed or removed actionmaps and actions;
+> handling those is outside the scope of this application.
+
 ## Getting started
 
 ### Build
