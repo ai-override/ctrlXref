@@ -302,6 +302,42 @@ pub fn clear_device_rebinds(root: &mut Element, rebinds: &Rebinds, actions: &[(S
     cleared
 }
 
+/// Removes the empty `device` rebinds, like `kb1_ ` or `js2_`, of `actions` (`(actionmap name,
+/// action name)`) from a rebind file whose inputs are `rebinds`, keeping the device's other
+/// rebinds. The game's control editor leaves these behind. Returns how many there were.
+pub fn clear_empty_device_rebinds(
+    root: &mut Element,
+    rebinds: &Rebinds,
+    actions: &[(String, String)],
+    device: &str,
+) -> usize {
+    let mut cleared = 0;
+    for key in actions {
+        let Some(inputs) = rebinds.get(key) else {
+            continue;
+        };
+        let of_device: Vec<&String> = inputs.iter().filter(|input| rebind_device(input) == Some(device)).collect();
+        let kept: Vec<String> = of_device.iter().filter(|input| !is_empty_rebind(input)).map(|input| input.to_string()).collect();
+        if kept.len() < of_device.len() {
+            set_device_rebinds(root, &key.0, &key.1, device, &kept);
+            cleared += of_device.len() - kept.len();
+        }
+    }
+    cleared
+}
+
+/// How the empty rebinds of a device column are written in its Clear menu item: `kb1_ `,
+/// `mo1_ `, `jsx_ ` (any joystick) and `gp1_ `.
+pub fn empty_rebind_label(device: &str) -> &'static str {
+    match device {
+        "keyboard" => "kb1_",
+        "mouse" => "mo1_",
+        "joystick" => "jsx_",
+        "gamepad" => "gp1_",
+        _ => "",
+    }
+}
+
 /// Appends the rebinds of the rebind file `other` to `root`, after the ones each action has,
 /// keeping all their attributes and creating actions and actionmaps when needed. Inputs that
 /// conflict are all kept, for the user to choose from; only an input the action already has is
@@ -1133,6 +1169,24 @@ mod tests {
         assert_eq!(inputs, ["js1_ ", "js2_x"]);
         set_device_rebinds(&mut root, "m", "a", "joystick", &inputs);
         assert!(xml_doc::to_string(&root).unwrap().contains(r#"tag="kept""#));
+    }
+
+    #[test]
+    fn clearing_empty_rebinds_keeps_real_ones_and_other_devices() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_ "/><rebind input="kb1_w" activationMode="hold"/><rebind input="js1_"/></action><action name="b"><rebind input="kb1_ "/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let have = read_rebinds(&root);
+        let actions = [("m".to_string(), "a".to_string()), ("m".to_string(), "b".to_string())];
+        assert_eq!(clear_empty_device_rebinds(&mut root, &have, &actions, "keyboard"), 2);
+        let after = read_rebinds(&root);
+        assert_eq!(after[&actions[0]], ["kb1_w", "js1_"]);
+        // An action left with no rebinds is removed.
+        assert!(!after.contains_key(&actions[1]));
+        assert!(xml_doc::to_string(&root).unwrap().contains(r#"activationMode="hold""#));
+        assert_eq!(clear_empty_device_rebinds(&mut root, &after, &actions, "keyboard"), 0);
+        assert_eq!(empty_rebind_label("joystick"), "jsx_");
     }
 
     #[test]

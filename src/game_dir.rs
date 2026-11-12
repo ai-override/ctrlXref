@@ -104,6 +104,25 @@ pub const CURRENT_REBIND: &str = r"LIVE\user\client\0\Profiles\default\actionmap
 /// Where the game saves the user's exported rebind mappings, relative to the game folder.
 pub const MAPPINGS_DIR: &str = r"LIVE\user\client\0\controls\mappings";
 
+/// The launcher's build manifest of the installed game, relative to the game folder. Its
+/// JSON `Data.Version` is the game build, e.g. `4.10.200.58746`.
+pub const BUILD_MANIFEST: &str = r"LIVE\build_manifest.id";
+
+/// The full game build in `dir`'s [`BUILD_MANIFEST`], e.g. `4.10.200.58746`, if it can be read.
+pub fn game_version(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(BUILD_MANIFEST)).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    json.get("Data")?.get("Version")?.as_str().map(str::to_string)
+}
+
+/// The game version as players write it, `major.minor.patch`: the build's patch counts in
+/// hundreds and the build number is dropped, so `4.10.200.58746` is `4.10.2`.
+pub fn short_version(full: &str) -> Option<String> {
+    let mut parts = full.trim().split('.').map(|part| part.parse::<u32>().ok());
+    let (major, minor, patch) = (parts.next()??, parts.next()??, parts.next()??);
+    Some(format!("{major}.{minor}.{}", patch / 100))
+}
+
 /// Whether `Data.p4k` has been extracted into `dir`, i.e. `dir` has a `Data` folder.
 pub fn is_extracted(dir: &Path) -> bool {
     dir.join("Data").is_dir()
@@ -264,6 +283,31 @@ mod tests {
     fn profile_path_keeps_absolute_arg() {
         let arg = Path::new(r"E:\xml\defaultProfile.xml");
         assert_eq!(profile_path(Path::new(r"D:\Games\StarCitizen"), Some(arg)), arg);
+    }
+
+    #[test]
+    fn short_version_rounds_patch_to_hundreds() {
+        assert_eq!(short_version("4.10.200.58746").as_deref(), Some("4.10.2"));
+        assert_eq!(short_version("4.10.0.12345").as_deref(), Some("4.10.0"));
+        assert_eq!(short_version("4.9.150.1").as_deref(), Some("4.9.1"));
+        assert_eq!(short_version("4.10.200").as_deref(), Some("4.10.2"));
+        assert_eq!(short_version("4.10"), None);
+        assert_eq!(short_version("sc-alpha"), None);
+    }
+
+    #[test]
+    fn game_version_reads_build_manifest() {
+        let (root, dir) = temp_game_dir("manifest", "StarCitizen", None);
+        assert_eq!(game_version(&dir), None);
+        std::fs::write(
+            dir.join(BUILD_MANIFEST),
+            r#"{ "Data": { "Branch": "sc-alpha-4.10.0", "Version": "4.10.200.58746" } }"#,
+        )
+        .unwrap();
+        assert_eq!(game_version(&dir).as_deref(), Some("4.10.200.58746"));
+        std::fs::write(dir.join(BUILD_MANIFEST), "not json").unwrap();
+        assert_eq!(game_version(&dir), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

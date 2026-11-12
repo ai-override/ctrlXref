@@ -1,7 +1,7 @@
 //! Table that lists XML elements as rows, one column per attribute name.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::RangeInclusive;
 
@@ -147,6 +147,12 @@ const DRAG_SCROLL_SPEED: f32 = 12.;
 /// the pointer beyond the edge of the visible cells.
 const DRAG_SCROLL_MAX: f32 = 3.;
 
+/// Whether one binding of a cell names a device but no input, like `kb1_ ` or `js2_`.
+fn is_empty_binding(binding: &str) -> bool {
+    let binding = binding.trim();
+    binding.len() > 1 && binding.ends_with('_')
+}
+
 /// A rectangle of selected cells, between two `(displayed row, column)` corners.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellSelection {
@@ -183,6 +189,8 @@ pub struct TableOutput {
     pub header_rects: Vec<egui::Rect>,
     /// The key of the column the user asked to clear with the context menu.
     pub clear_column: Option<String>,
+    /// The key of the column whose empty bindings the user asked to clear with the context menu.
+    pub clear_empty_column: Option<String>,
     /// Whether resolving conflicts ended because none are left.
     pub conflicts_resolved: bool,
 }
@@ -196,6 +204,8 @@ pub struct AttributeTable {
     sort: Option<(usize, ColumnSort)>,
     /// Keys of the columns whose cells can be edited with a double-click.
     editable: HashSet<String>,
+    /// The Clear Empty Bindings menu item text of each editable column that has one, by key.
+    clear_empty_items: HashMap<String, String>,
     /// Keys of the columns whose titles keep their case in the uppercase headers.
     exact_titles: HashSet<String>,
     editing: Option<Editing>,
@@ -220,6 +230,7 @@ impl AttributeTable {
             rows: Vec::new(),
             sort: None,
             editable: HashSet::new(),
+            clear_empty_items: HashMap::new(),
             exact_titles: HashSet::new(),
             editing: None,
             resolving: None,
@@ -341,6 +352,12 @@ impl AttributeTable {
     /// Makes the cells of the columns with these keys editable with a double-click.
     pub fn set_editable(&mut self, columns: &[&str]) {
         self.editable = columns.iter().map(|name| name.to_string()).collect();
+    }
+
+    /// Gives the editable columns `items` (`(column key, menu item text)`) a context menu item
+    /// that asks to clear the column's empty bindings, such as `kb1_ `.
+    pub fn set_clear_empty_items(&mut self, items: &[(&str, String)]) {
+        self.clear_empty_items = items.iter().map(|(key, text)| (key.to_string(), text.clone())).collect();
     }
 
     /// Makes the titles of the columns with these keys keep their case in the dark theme,
@@ -763,6 +780,17 @@ impl AttributeTable {
                                         if ui.add_enabled(has_values, clear).clicked() {
                                             out.clear_column = Some(key.clone());
                                             ui.close();
+                                        }
+                                        if let Some(text) = self.clear_empty_items.get(key) {
+                                            let has_empty = self
+                                                .rows
+                                                .iter()
+                                                .any(|row| row.cells[col_ix].split('|').any(is_empty_binding));
+                                            let clear = egui::Button::new(text.as_str());
+                                            if ui.add_enabled(has_empty, clear).clicked() {
+                                                out.clear_empty_column = Some(key.clone());
+                                                ui.close();
+                                            }
                                         }
                                     }
                                 });
@@ -1330,6 +1358,37 @@ mod tests {
         table.set_editable(&["keyboard"]);
         let mut headless = Headless::new(&mut table, 1200., 600.);
         assert_eq!(clear_from_menu(&mut headless, &mut table, 0, 1), None);
+    }
+
+    #[test]
+    fn the_context_menu_clears_empty_bindings_only_when_the_column_has_some() {
+        /// Right-clicks the cell at `row`, `col` and clicks the item below Clear All Column Bindings.
+        fn clear_empty_from_menu(headless: &mut Headless, table: &mut AttributeTable, row: usize, col: usize) -> Option<String> {
+            let pos = headless.cell(row, col);
+            right_click(headless, table, pos, Some(row));
+            // Clear All Column Bindings spans about 60..85 below the click; this item is next.
+            let item = pos + egui::vec2(24., 95.);
+            let mut asked = None;
+            for events in [
+                vec![egui::Event::PointerMoved(item)],
+                vec![Headless::press(item, true)],
+                vec![Headless::press(item, false)],
+                Vec::new(),
+            ] {
+                asked = asked.or(headless.frame(table, events, Some(row)).0.clear_empty_column);
+            }
+            asked
+        }
+
+        let rows = attribute_rows(r#"<m><a name="1" keyboard="kb1_  | kb1_x" mouse="mo1_m"/><a name="2" keyboard="kb1_y"/></m>"#);
+        let mut table = AttributeTable::new();
+        table.set_rows(&["name", "keyboard", "mouse"], &rows);
+        table.set_editable(&["keyboard", "mouse"]);
+        table.set_clear_empty_items(&[("keyboard", "Clear all kb1_ empty bindings".into()), ("mouse", "Clear all mo1_ empty bindings".into())]);
+        let mut headless = Headless::new(&mut table, 1200., 600.);
+        assert_eq!(clear_empty_from_menu(&mut headless, &mut table, 1, 1).as_deref(), Some("keyboard"));
+        // The mouse column has no empty bindings: its item is disabled.
+        assert_eq!(clear_empty_from_menu(&mut headless, &mut table, 0, 2), None);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use ctrlxref::localization::Strings;
 use ctrlxref::rebinds::{
     DEVICES, MAX_HEADER_LABEL, MatchReason, Rebinds, Suggestion, action_key, action_paths, clear_device_rebinds,
+    clear_empty_device_rebinds, empty_rebind_label,
     complete_blank_layout, count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind,
     merge_rebinds, move_action_rebinds, parse_cell_inputs, profile_input, read_rebinds, rebind_device, remove_action,
     remove_unmatched, set_device_rebinds, set_header_label, set_keyboard_rebind, suggest_targets,
@@ -193,6 +194,8 @@ enum DialogAction {
     SaveAsThen(AfterPrompt),
     /// Does what was asked without saving the open rebind file.
     DiscardThen(AfterPrompt),
+    /// Removes the empty rebinds of this device column, after [`clear_empty_warning`].
+    ClearEmptyBindings(String),
 }
 
 /// The open rebind file's state before one change to it.
@@ -335,6 +338,10 @@ pub struct CtrlXrefApp {
     /// The Star Citizen installation folder picked with Source > Locate Star Citizen Game Folder,
     /// or saved in the registry by an earlier run.
     game_dir: Option<PathBuf>,
+    /// The full game build in [`Self::game_dir`]'s [`game_dir::BUILD_MANIFEST`], shown in the
+    /// menu bar; read when the game folder is set and when the window gets focus, not every
+    /// frame.
+    game_version: Option<String>,
     /// The result of the running Extract Defaults, so it is not started twice.
     extracting: Option<Receiver<anyhow::Result<()>>>,
     /// The startup profile argument while it waits for a game folder or an extraction
@@ -386,7 +393,14 @@ impl CtrlXrefApp {
         let mut table = AttributeTable::new();
         // Only the bindings can be edited; the edits go to the rebind file.
         table.set_editable(&DEVICES);
+        let clear_empty: Vec<(&str, String)> = DEVICES
+            .iter()
+            .map(|device| (*device, format!("Clear all {} empty bindings", empty_rebind_label(device))))
+            .collect();
+        table.set_clear_empty_items(&clear_empty);
         table.set_exact_titles(&[DEFAULT_COLUMN]);
+        let saved_game_dir = game_dir::load_saved();
+        let game_version = saved_game_dir.as_deref().and_then(game_dir::game_version);
         Self {
             ctx: ctx.clone(),
             table,
@@ -395,7 +409,8 @@ impl CtrlXrefApp {
             selected: None,
             reveal_in_tree: false,
             scroll_table_to: None,
-            game_dir: game_dir::load_saved(),
+            game_dir: saved_game_dir,
+            game_version,
             extracting: None,
             startup_profile: Some(initial_file),
             startup_rebind: initial_rebind_file,
@@ -1048,6 +1063,57 @@ impl CtrlXrefApp {
         );
     }
 
+    /// Asks with [`clear_empty_warning`] before [`Self::clear_empty_column`], since the empty
+    /// rebinds may be defaults the user unbound on purpose.
+    fn ask_clear_empty_column(&mut self, device: &str) {
+        let Some(doc) = &self.document else {
+            return;
+        };
+        let actions: Vec<String> = doc
+            .rows
+            .iter()
+            .filter_map(|path| action_key(&doc.root, path))
+            .filter(|key| {
+                doc.rebinds.get(key).is_some_and(|inputs| {
+                    inputs.iter().any(|input| rebind_device(input) == Some(device) && is_empty_rebind(input))
+                })
+            })
+            .map(|(map, action)| format!("{action}  ({map})"))
+            .collect();
+        if !actions.is_empty() {
+            self.dialogs.push(clear_empty_warning(device, actions));
+        }
+    }
+
+    /// Removes the empty `device` rebinds, like `kb1_ `, from the actions in the table, as the
+    /// context menu asks, keeping their other rebinds. Ctrl+Z brings them back.
+    fn clear_empty_column(&mut self, device: &str) {
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(rebind_root) = &mut doc.rebind_root else {
+            return;
+        };
+        let actions: Vec<(String, String)> = doc.rows.iter().filter_map(|path| action_key(&doc.root, path)).collect();
+        let before = rebind_root.clone();
+        let cleared = clear_empty_device_rebinds(rebind_root, &doc.rebinds, &actions, device);
+        if cleared == 0 {
+            return;
+        }
+        doc.rebinds = read_rebinds(rebind_root);
+        let label = empty_rebind_label(device);
+        self.undo.push(format!("clearing the {label} empty bindings"), before, self.rebinds_modified);
+        self.rebinds_modified = true;
+        self.refresh_table();
+        self.notify(
+            Level::Success,
+            format!(
+                "Cleared {cleared} {label} empty {device} bindings. Ctrl+Z brings them back. \
+                 Save the rebind file to keep this"
+            ),
+        );
+    }
+
     /// Ctrl+Z undoes the latest change to the rebinds, unless a text field has the keyboard, which
     /// then undoes its own typing.
     fn undo_key(&mut self, ctx: &Context) {
@@ -1541,6 +1607,7 @@ impl CtrlXrefApp {
                 self.dialogs.push(missing_tools_warning(&path, &missing));
             }
         }
+        self.game_version = game_dir::game_version(&path);
         self.game_dir = Some(path);
         self.open_startup_profile();
     }
@@ -1846,6 +1913,7 @@ impl CtrlXrefApp {
             DialogAction::SaveThen(after) => self.save_then(after),
             DialogAction::SaveAsThen(after) => self.save_as_after = Some(after),
             DialogAction::DiscardThen(after) => self.proceed(after),
+            DialogAction::ClearEmptyBindings(device) => self.clear_empty_column(&device),
         }
     }
 
@@ -1861,6 +1929,14 @@ impl CtrlXrefApp {
                 }
                 ui.label(RichText::new(format!("v{VERSION}")).small().weak())
                     .on_hover_text(format!("ctrlXref version {VERSION}; Help > About ctrlXref tells more"));
+                if let Some(full) = &self.game_version {
+                    let short = game_dir::short_version(full).unwrap_or_else(|| full.clone());
+                    ui.label(RichText::new(format!("Game version: LIVE V{short}")).small().weak())
+                        .on_hover_text(format!(
+                            "Star Citizen build {full} from {}",
+                            game_dir::BUILD_MANIFEST
+                        ));
+                }
             });
         });
         picked
@@ -1950,6 +2026,9 @@ impl CtrlXrefApp {
         }
         if let Some(column) = &out.clear_column {
             self.clear_column(column);
+        }
+        if let Some(column) = &out.clear_empty_column {
+            self.ask_clear_empty_column(column);
         }
         if let Some(row_ix) = out.clicked_row {
             self.select_in_table(row_ix);
@@ -2304,6 +2383,10 @@ impl eframe::App for CtrlXrefApp {
             self.on_close_requested();
         }
         self.poll_extraction();
+        // The launcher may have patched the game while the window was in the background.
+        if ctx.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::WindowFocused(true)))) {
+            self.game_version = self.game_dir.as_deref().and_then(game_dir::game_version);
+        }
         if !self.started {
             self.started = true;
             self.open_startup_profile();
@@ -2435,6 +2518,26 @@ fn unsaved_rebinds_warning(path: &Path, after: AfterPrompt, merged: bool) -> Dia
     } else {
         ("Save", "Cancel", DialogAction::SaveThen(after))
     });
+    dialog
+}
+
+/// Explains that an empty rebind unbinds the action's default `device` binding, and asks
+/// whether to clear those of `actions` and so bring their defaults back.
+fn clear_empty_warning(device: &str, actions: Vec<String>) -> Dialog {
+    let label = empty_rebind_label(device);
+    let message = format!(
+        "An empty binding like {label} is how the game stores \"no {device} input\" for an action: it \
+         overrides the action's default {device} binding from defaultProfile.xml, so the action is \
+         unbound on the {device}.\n\n\
+         The game's control editor often leaves these behind by mistake. But one may also be a \
+         default you unbound on purpose.\n\n\
+         Clearing them puts the DEFAULT {device} bindings back into effect for these {} actions. \
+         Ctrl+Z undoes this. Do you want to return the default bindings?",
+        actions.len()
+    );
+    let mut dialog = Dialog::warning(&format!("Clear all {label} empty bindings"), message);
+    dialog.list = actions;
+    dialog.confirm = Some(("OK", "Cancel", DialogAction::ClearEmptyBindings(device.to_string())));
     dialog
 }
 
@@ -3044,6 +3147,38 @@ mod tests {
         assert_eq!(rebinds_of(&app), before);
         // The whole file is back as it was, order and all.
         assert_eq!(app.document.as_ref().unwrap().rebind_root, root_before);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn clearing_empty_bindings_keeps_real_ones_and_undo_brings_them_back() {
+        let (mut app, dir, rebind) = app_with_rebinds("clear-empty-bindings");
+        std::fs::write(
+            &rebind,
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_ "/><rebind input="kb1_x"/><rebind input="js2_ "/></action><action name="b"><rebind input="kb1_ "/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        app.open_rebind_path(rebind);
+        let before = rebinds_of(&app);
+
+        // The menu only asks first; OK clears.
+        app.dialogs.clear();
+        app.ask_clear_empty_column("keyboard");
+        assert_eq!(rebinds_of(&app), before);
+        let dialog = app.dialogs.pop().expect("a confirmation");
+        assert_eq!(dialog.list.len(), 2);
+        let Some(("OK", "Cancel", action)) = dialog.confirm else {
+            panic!("no OK / Cancel");
+        };
+        app.run_dialog_action(action);
+        assert_eq!(rebinds_of(&app), ["a: js2_ ", "a: kb1_x"]);
+        assert!(app.rebinds_modified);
+        app.clear_empty_column("joystick");
+        assert_eq!(rebinds_of(&app), ["a: kb1_x"]);
+
+        app.undo_change();
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), before);
         std::fs::remove_dir_all(dir).ok();
     }
 

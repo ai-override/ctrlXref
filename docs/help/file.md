@@ -76,8 +76,13 @@ profile and can't be edited.
 - Right-click a **keyboard**, **mouse**, **joystick** or **gamepad** cell and choose **Clear All
   Column Bindings** to remove all of that device's rebinds from the actions in the table. This
   does not unbind those actions: the game uses their default bindings again.
+- The same menu's **Clear all kb1_ empty bindings** (`mo1_`, `jsx_` or `gp1_` in the other
+  columns) removes only that device's empty bindings, like `kb1_ ` or `js2_ `, which the game's
+  control editor leaves behind, and keeps the real ones. It is greyed out when the column has none.
+  An empty binding is also how the game stores a default binding you unbound, so a warning lists
+  the actions first and asks you to confirm that their default bindings should come back into effect.
 - **Ctrl+Z** undoes the latest change to the rebinds, one step at a time, up to 100: cell edits,
-  **Clear All Column Bindings** and **Autofill All Unbound Keyboard Controls**. In a text field it
+  **Clear All Column Bindings**, **Clear all … empty bindings** and **Autofill All Unbound Keyboard Controls**. In a text field it
   undoes your typing instead, so click the table first. Opening or closing a file forgets the steps.
 - The **DEFAULT from: Data.p4k R/O** column, in light blue, shows the default bindings that come from the
   game engine through `defaultProfile.xml`, for all devices. It is read-only:
