@@ -3,32 +3,37 @@
 
 A Windows desktop tool for viewing and modifying [Star Citizen](https://robertsspaceindustries.com/) control bindings. ctrlXref cross-references the game's default control profile with your own custom rebind files. You will be able to see and modify every action and its bindings in a single table. Merging multiple custom rebind files from various sources is now supported for creating a new custom binding with all your preferred bindings.
 ### What it's not
-ctrlXref does not identify as [Star Citizen](https://robertsspaceindustries.com/) control profile editor as the application is lacking proper modeling of various devices and the controls they provide. You can manipulate the controls manually inside the table cells but there's no dialogs, dropdowns, key or button press, etc. support. You are encouraged to use the Game integrated control editor or some other 3rd party solutions (as the great: [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your control settings.  
+ctrlXref does not identify as a [Star Citizen](https://robertsspaceindustries.com/) control profile editor, as the application lacks proper modeling of the various devices and the controls they provide. You can manipulate the controls manually inside the table cells, but there are no dialogs, dropdowns, key or button press capture, etc. You are encouraged to use the game's integrated control editor or some other 3rd party solution (such as the great [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your control settings.  
 
 > [!NOTE]
 > ctrlXref is an unofficial fan project and is not affiliated with or endorsed by Cloud Imperium Games.
 
 > [!WARNING]
-> Work In Progress! This application is still a early development release with testing of the functionality hardly started.
+> Work In Progress! This application is still an early development release with testing of the functionality hardly started.
 > Make manual backups of your controls under `StarCitizen\LIVE\user\client\0\controls\mappings\` before using ctrlXref 
 > as modifications made by this application are ***not reversible*** and might not work within the actual game.
 
 ## Features
 
-- Browse all ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, using the game's own `English labels.`
+- Browse all ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, using the game's own English labels.
 - See default bindings side by side with your rebinds for keyboard, mouse, joysticks and gamepad.
 - Edit bindings directly in the table, with possible conflicts shown in red.
 - Merge multiple custom rebind files to create your preferred control setup and confirm which controls are truly bound to what action.
 - Conflicting controls manual resolving support (TODO improved edit features later).
-- Move or remove bindings of actions that older rebind files name but the game engine current profile no longer has, with suggested renamed or moved actions.
+- Move or remove bindings of actions that older rebind files name but the game engine's current profile no longer has, with suggested renamed or moved actions.
 - List the game's control name list with examples in a sortable table.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
 - Search the table and the tree with regular expressions (`Ctrl+F`, `F3`, `Shift+F3`), keeping previous searches in a dropdown list.
 - Open the game's current `actionmaps.xml` or any mappings file you exported from the game.
-- Create a blank rebind file that "clears" every binding, for starting from scratch. ***Behavior inside the game UNTESTED***.
-- List unused key combinations and allows "sequential" assignment of them to actions with no keyboard binding.
+- Create a blank rebind file that "clears" every binding, forcing all default bindings to unbound. ***Behavior inside the game UNTESTED***.
+- List unused key combinations and allow their "sequential" assignment of them to actions with no keyboard binding.
 - Export the table to a `.csv` file for use in a spreadsheet in the current table sorting order, or to a structured `.json` file that follows the tree.
-- Switch between ***dark*** and ***light*** themes (Light theme lacking the game styling and feel).
+- Switch between ***dark*** and ***light*** themes (the light theme lacks the game's styling and feel).
+- Clone `defaultProfile.xml` bindings into the current rebind setup by column. For the joystick column, choose the jsx_ number to clone to.
+- Remove bindings from a column by wildcard `*` matching.
+- Change joystick numbers from the context menu. Example: from js2_ to js8_ (numbers 1-8 are available in the game engine, at least in theory; probably at most 5 are really supported currently). NOTE! Swapping two numbers is doable by first moving one to a free number temporarily and then moving the other where the first was... you get the idea, I'm sure.
+- The Star Citizen game version and the ctrlXref version are shown in the menu bar, beside the theme selector.
+
 
 ctrlXref writes only to rebind files. It never changes `Data.p4k` or `defaultProfile.xml`. Saving the current bindings `actionmaps.xml` spawns a Warning as the file will be overwritten by the game engine on configuration modifications.
 
@@ -112,7 +117,7 @@ StarCitizen\Data\
 
 This keeps the folder compact and saves a lot of time. A full extraction can take from several minutes to hours in the worst case, depending on your disk and the size of the game. As an example, one 150 GB `Data.p4k` unpacked to almost 1.5 million files taking up about 240 GB.
 
-***BUG*** inside the `unp4k.exe` also unpacks the large game database, `Game2.dcb`, whichever files are requested. ctrlXref deletes it before the conversion step, as the rest of the process doesn't need it.
+***BUG***: `unp4k.exe` also unpacks the large game database, `Game2.dcb`, whichever files are requested. ctrlXref deletes it before the conversion step, as the rest of the process doesn't need it.
 
 > [!TIP]
 > The conversion step processes everything in the `Data` folder, so it takes longer if the folder already holds a full extraction.
@@ -140,6 +145,7 @@ The full documentation is built into the application and is also available in [`
 - [File menu](docs/help/file.md)
 - [Source menu](docs/help/source.md)
 - [Tools menu](docs/help/tools.md)
+- [Context menus](docs/help/context_menus.md)
 
 ## Development
 
@@ -164,7 +170,7 @@ Third-party components keep their own licenses:
 If you find this utility useful, consider making a small donation helping me with my huge AI expenses and my extensive high quality Coffee consumption to:
 [classloader](https://paypal.me/SCclassloader?target=_blank)
 
-[comment]: # (classloader https://paypal.me/cassoverride?target=_blank Dysfuncional atm because PayPal refuses to accept my business account for receivinfg payments.) 
+[comment]: # (classloader https://paypal.me/cassoverride?target=_blank Dysfunctional atm because PayPal refuses to accept my business account for receiving payments.) 
 
 [comment]: # (Check the functionality of the paypal.me link as there are constant/random errors in PayPal account settings modifications and many submits and button presses return Try Again Later Errors and Warnings)
 
@@ -178,17 +184,21 @@ For all of us lazy gamers, here's the pre-built exe. No install required or even
 
 ## Screenshots
 - Column sorting ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
-- Conflict / multibinding resolving![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
-- Column Autofilling (will be refactored into column contextmenu soon) ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
+- Conflict / multibinding resolving ![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
+- Column Autofill (will be refactored into the column context menu soon) ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
 - Unmatched rebinds warning after opening an older rebind file (a GameGlass layout made for Star Citizen 4.0) ![Unmatched Rebinds Warning](assets/images/orphaned_resolve1.png)
-- Unmatched rebinds resolving with suggested actions of the game engine current profile ![Unmatched Rebinds Resolving](assets/images/orphaned_resolve2.png)
+- Unmatched rebinds resolving with suggested actions of the game engine's current profile ![Unmatched Rebinds Resolving](assets/images/orphaned_resolve2.png)
+- Deleting with `*` wildcard(s) ![Delete using wildcard * character](assets/images/wildcard_delete.png)
+- Cloning default bindings to a rebind column ![Clone Default bindings to column](assets/images/clone_to_jsx.png)
+- Changing Joystick numbers ![Change Joystick jsx_ to jsy_](assets/images/change_jsx_.png)
+
 
 > ## TODO
-> - [x] Update / improve the integrated Help documentation (ongoing).
-> - [ ] Improve the column editing features (maybe quick swap 'kb1_y | kb1_alt+y' <-> 'kb1_alt+y' | 'kb1_y').
-> - [ ] Do separate "limited" autofill also for the other columns (will need keyboard keys to fill all as especially GamePad will run out of button combinations).
-> - [ ] Add clear column with warning message to the column context menu.
-> - [ ] Move the delete and autofill etc. options to contextmenu.
-> - [ ] Column delete all with wildcards like: 'kb* mb1_ * \*x \*maxis\* joy2_* (1 2 3 n delete first or second third n control from cells with multiple controls)
-> - [ ] ***PDF*** File export?
+> - [ ] Update / improve the integrated Help documentation (ongoing).
+> - [ ] Improve the column editing features (maybe quick swap 'kb1_y | kb1_alt+y' <-> 'kb1_alt+y | kb1_y').
+> - [x] Add clear column with warning message to the column context menu.
+> - [x] Column delete all with wildcards like: kb\* mo1_\* \*x \*maxis\* js2_\* 
+> - [ ] Delete: 1 2 3 n  Delete the first, second, third or nth binding from cells with multiple controls (with red warning background, separated by ' | ' Space VerticalBar Space).
+> - [x] Joystick number manipulation/changing (swapping joystick jsx_ without editing the cells by hand).  
+> - [ ] ***PDF*** File export. Not sure where this would be used?
 > - [ ] Printer support (probably doable using the ***Light theme*** quite easily)?

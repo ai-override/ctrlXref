@@ -454,6 +454,82 @@ fn default_inputs(action: &Element, device: &str) -> Vec<String> {
     }
 }
 
+/// The device instance of a prefixed rebind `input`: 2 for `js2_button1`.
+fn instance_of(input: &str) -> Option<u32> {
+    prefixed_device(input)?;
+    input.split_once('_')?.0.get(2..)?.parse().ok()
+}
+
+/// The device instances that the `device` rebinds of `actions` use, sorted: `[1, 2]` for
+/// `js1_x` and `js2_button3`.
+pub fn device_instances(rebinds: &Rebinds, actions: &[(String, String)], device: &str) -> Vec<u32> {
+    let mut instances: Vec<u32> = actions
+        .iter()
+        .filter_map(|key| rebinds.get(key))
+        .flatten()
+        .filter(|input| rebind_device(input) == Some(device))
+        .filter_map(|input| instance_of(input))
+        .collect();
+    instances.sort_unstable();
+    instances.dedup();
+    instances
+}
+
+/// Moves the `device` rebinds of `actions` from device instance `from` to `to` in a rebind
+/// file whose inputs are `rebinds`: `js1_button3` becomes `js2_button3` for 1 to 2. Each
+/// `<rebind>` is changed in place, keeping its other attributes. A moved rebind that the action
+/// already has on `to` is removed, so it is there once. Returns how many rebinds were moved.
+pub fn change_device_instance(
+    root: &mut Element,
+    rebinds: &Rebinds,
+    actions: &[(String, String)],
+    device: &str,
+    from: u32,
+    to: u32,
+) -> usize {
+    if from == to {
+        return 0;
+    }
+    let is_moved = |input: &str| rebind_device(input) == Some(device) && instance_of(input) == Some(from);
+    let mut moved = 0;
+    for key in actions {
+        if !rebinds.get(key).is_some_and(|inputs| inputs.iter().any(|input| is_moved(input))) {
+            continue;
+        }
+        let Some(map) = find_named_mut(root, ACTIONMAP_TAG, &key.0) else {
+            continue;
+        };
+        let Some(action) = map.children.iter_mut().filter_map(XMLNode::as_mut_element).find(|child| is_named(child, "action", &key.1))
+        else {
+            continue;
+        };
+        for rebind in action.children.iter_mut().filter_map(XMLNode::as_mut_element).filter(|child| child.name == REBIND_TAG) {
+            if let Some(input) = rebind.attributes.get_mut("input")
+                && is_moved(input)
+            {
+                *input = with_instance(input, to);
+                moved += 1;
+            }
+        }
+        // Keep the first of rebinds that now have the same input.
+        let mut seen: Vec<String> = Vec::new();
+        action.children.retain(|node| {
+            let Some(input) = node.as_element().filter(|child| child.name == REBIND_TAG).and_then(rebind_input) else {
+                return true;
+            };
+            if rebind_device(&input) != Some(device) || is_empty_rebind(&input) {
+                return true;
+            }
+            if seen.contains(&input) {
+                return false;
+            }
+            seen.push(input);
+            true
+        });
+    }
+    moved
+}
+
 /// The prefixed rebind `input` with its device instance set to `instance`: `js1_x` for 3 is `js3_x`.
 fn with_instance(input: &str, instance: u32) -> String {
     match input.split_once('_') {
@@ -1364,6 +1440,31 @@ mod tests {
         assert_eq!(after[&key("e")], ["kb1_ "]);
         // a already has a mouse rebind.
         assert_eq!(clone_default_rebinds(&mut root, &profile, &rows, &after, "mouse", None), 0);
+    }
+
+    #[test]
+    fn changing_the_joystick_number_moves_rebinds_in_place() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><actionmap name="m">
+                <action name="a"><rebind input="js1_button3" activationMode="hold"/><rebind input="kb1_w"/><rebind input="js2_x"/></action>
+                <action name="b"><rebind input="js1_x"/><rebind input="js2_x"/></action>
+                <action name="c"><rebind input="js3_button1"/></action>
+            </actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        let have = read_rebinds(&root);
+        let key = |action: &str| ("m".to_string(), action.to_string());
+        let actions = [key("a"), key("b"), key("c")];
+        assert_eq!(device_instances(&have, &actions, "joystick"), [1, 2, 3]);
+        assert_eq!(change_device_instance(&mut root, &have, &actions, "joystick", 1, 2), 2);
+        let after = read_rebinds(&root);
+        assert_eq!(after[&key("a")], ["js2_button3", "kb1_w", "js2_x"]);
+        // b had x on both sticks; it is there once.
+        assert_eq!(after[&key("b")], ["js2_x"]);
+        assert_eq!(after[&key("c")], ["js3_button1"]);
+        assert!(xml_doc::to_string(&root).unwrap().contains(r#"<rebind input="js2_button3" activationMode="hold""#));
+        assert_eq!(device_instances(&after, &actions, "joystick"), [2, 3]);
+        assert_eq!(change_device_instance(&mut root, &after, &actions, "joystick", 3, 3), 0);
     }
 
     #[test]

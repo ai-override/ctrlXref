@@ -14,7 +14,7 @@ use ctrlxref::localization::Strings;
 use ctrlxref::rebinds::{
     DEVICES, MAX_HEADER_LABEL, MatchReason, Rebinds, Suggestion, action_key, action_paths, clear_device_rebinds,
     clear_empty_device_rebinds, clone_default_rebinds, device_prefix, empty_rebind_label, matching_rebinds,
-    remove_matching_rebinds,
+    remove_matching_rebinds, change_device_instance, device_instances,
     complete_blank_layout, count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind,
     merge_rebinds, move_action_rebinds, parse_cell_inputs, profile_input, read_rebinds, rebind_device, remove_action,
     remove_unmatched, set_device_rebinds, set_header_label, set_keyboard_rebind, suggest_targets,
@@ -331,6 +331,15 @@ struct WildcardPrompt {
     focus: bool,
 }
 
+/// The Change Joystick number box: which stick's bindings move to which.
+struct InstancePrompt {
+    device: String,
+    /// The numbers the column's bindings use, like 1 and 2 for `js1_` and `js2_`.
+    in_use: Vec<u32>,
+    from: Option<u32>,
+    to: Option<u32>,
+}
+
 /// The box Save Rebind Copy As shows first, asking for the copy's header label.
 struct LabelPrompt {
     text: String,
@@ -390,6 +399,8 @@ pub struct CtrlXrefApp {
     label_prompt: Option<LabelPrompt>,
     /// The Remove by * wildcards box, while it is open.
     wildcard_prompt: Option<WildcardPrompt>,
+    /// The Change Joystick number box, while it is open.
+    instance_prompt: Option<InstancePrompt>,
     /// The label the box accepted, for the save box shown next.
     pending_copy_label: Option<String>,
     /// The Unmatched Rebinds box, while it is open.
@@ -418,6 +429,7 @@ impl CtrlXrefApp {
         table.set_clone_default_columns(&CLONE_DEFAULT_DEVICES);
         // The joystick's defaults don't say which stick they are for, so the user picks it.
         table.set_clone_default_instances(&[(DEVICES[2], "js")]);
+        table.set_change_instance_items(&[(DEVICES[2], "Change Joystick number...")]);
         table.set_exact_titles(&[DEFAULT_COLUMN]);
         let saved_game_dir = game_dir::load_saved();
         let game_version = saved_game_dir.as_deref().and_then(game_dir::game_version);
@@ -449,6 +461,7 @@ impl CtrlXrefApp {
             control_names: None,
             label_prompt: None,
             wildcard_prompt: None,
+            instance_prompt: None,
             pending_copy_label: None,
             unmatched: None,
         }
@@ -1134,6 +1147,128 @@ impl CtrlXrefApp {
             return;
         }
         self.wildcard_prompt = Some(WildcardPrompt { device, text: String::new(), focus: true });
+    }
+
+    /// Opens the Change Joystick number box for the `device` column, listing the numbers its
+    /// bindings use. It needs an open rebind file with such bindings.
+    fn ask_instance_change(&mut self, device: String) {
+        if !self.document.as_ref().is_some_and(|doc| doc.rebind_root.is_some()) {
+            self.notify(
+                Level::Warning,
+                "Open a rebind file first (File > Open Current Rebind File or Open Custom Rebind File...); \
+                 its bindings are changed",
+            );
+            return;
+        }
+        let actions = self.table_actions();
+        let Some(doc) = &self.document else {
+            return;
+        };
+        let in_use = device_instances(&doc.rebinds, &actions, &device);
+        if in_use.is_empty() {
+            self.notify(Level::Info, format!("No {device} binding has a number to change"));
+            return;
+        }
+        let from = (in_use.len() == 1).then(|| in_use[0]);
+        self.instance_prompt = Some(InstancePrompt { device, in_use, from, to: None });
+    }
+
+    /// Moves the `device` bindings of the actions in the table from device number `from` to
+    /// `to`, like `js1_` to `js2_`. Ctrl+Z moves them back.
+    fn change_instance(&mut self, device: &str, from: u32, to: u32) {
+        let actions = self.table_actions();
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(rebind_root) = &mut doc.rebind_root else {
+            return;
+        };
+        let before = rebind_root.clone();
+        let moved = change_device_instance(rebind_root, &doc.rebinds, &actions, device, from, to);
+        if moved == 0 {
+            return;
+        }
+        doc.rebinds = read_rebinds(rebind_root);
+        let code = &device_prefix(device)[..2];
+        self.undo.push(format!("changing {code}{from}_ to {code}{to}_"), before, self.rebinds_modified);
+        self.rebinds_modified = true;
+        self.refresh_table();
+        self.notify(
+            Level::Success,
+            format!(
+                "Changed {moved} {device} bindings from {code}{from}_ to {code}{to}_. Ctrl+Z changes them back. \
+                 Save the rebind file to keep this"
+            ),
+        );
+    }
+
+    /// Shows the Change Joystick number box: a From list of the numbers in use and a To list of
+    /// all numbers, with Change and Cancel.
+    fn instance_prompt(&mut self, ctx: &Context) {
+        if !self.dialogs.is_empty() {
+            return;
+        }
+        let Some(prompt) = &mut self.instance_prompt else {
+            return;
+        };
+        let code = &device_prefix(&prompt.device)[..2];
+        let mut close = false;
+        let mut change = None;
+        let response = egui::Modal::new(Id::unique("change instance")).show(ctx, |ui| {
+            ui.set_width(360.);
+            ui.heading("Change Joystick number");
+            ui.add_space(8.);
+            ui.label(format!(
+                "Moves the column's bindings of one stick to another: {code}1_button3 becomes {code}2_button3 \
+                 for {code}1_ to {code}2_. Their other settings are kept."
+            ));
+            ui.add_space(8.);
+            ui.columns(2, |columns| {
+                columns[0].label(RichText::new("From").strong());
+                for &number in &prompt.in_use {
+                    columns[0].selectable_value(&mut prompt.from, Some(number), format!("{code}{number}_"));
+                }
+                columns[1].label(RichText::new("To").strong());
+                for number in 1..=attribute_table::MAX_DEVICE_INSTANCE {
+                    let label = format!("{code}{number}_");
+                    let label = if prompt.in_use.contains(&number) { format!("{label}  (in use)") } else { label };
+                    columns[1].selectable_value(&mut prompt.to, Some(number), label);
+                }
+            });
+            ui.add_space(12.);
+            let ready = match (prompt.from, prompt.to) {
+                (Some(from), Some(to)) if from != to => Some((from, to)),
+                _ => None,
+            };
+            if let (Some(from), Some(to)) = (prompt.from, prompt.to)
+                && prompt.in_use.contains(&to)
+                && from != to
+            {
+                ui.label(
+                    RichText::new(format!(
+                        "{code}{to}_ already has bindings; they are merged with {code}{from}_'s."
+                    ))
+                    .color(ui.visuals().warn_fg_color),
+                );
+                ui.add_space(4.);
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add_enabled(ready.is_some(), egui::Button::new("Change")).clicked() {
+                    change = ready;
+                    close = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        let device = prompt.device.clone();
+        if close || response.should_close() {
+            self.instance_prompt = None;
+        }
+        if let Some((from, to)) = change {
+            self.change_instance(&device, from, to);
+        }
     }
 
     /// The actions in the table, as `(actionmap name, action name)`.
@@ -2146,6 +2281,9 @@ impl CtrlXrefApp {
         if let Some(column) = out.wildcard_column {
             self.ask_wildcard_pattern(column);
         }
+        if let Some(column) = out.change_instance_column {
+            self.ask_instance_change(column);
+        }
         if let Some(row_ix) = out.clicked_row {
             self.select_in_table(row_ix);
         }
@@ -2456,7 +2594,11 @@ impl CtrlXrefApp {
     /// Shows the Unmatched Rebinds box: each rebound action the profile lacks, with buttons that
     /// move its rebinds to a suggested profile action or remove them.
     fn unmatched_prompt(&mut self, ctx: &Context) {
-        if !self.dialogs.is_empty() || self.label_prompt.is_some() || self.wildcard_prompt.is_some() {
+        if !self.dialogs.is_empty()
+            || self.label_prompt.is_some()
+            || self.wildcard_prompt.is_some()
+            || self.instance_prompt.is_some()
+        {
             return;
         }
         let Some(rows) = &self.unmatched else {
@@ -2605,6 +2747,7 @@ impl eframe::App for CtrlXrefApp {
         self.dialog(&ctx);
         self.label_prompt(&ctx);
         self.wildcard_prompt(&ctx);
+        self.instance_prompt(&ctx);
         self.unmatched_prompt(&ctx);
         self.toasts(&ctx);
         self.help_windows(&ctx);
@@ -3410,6 +3553,24 @@ mod tests {
         app.remove_by_wildcards("keyboard", "nothing*");
         assert_eq!(rebinds_of(&app), ["a: kb1_lalt+i", "b: kb1_x"]);
 
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), before);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn changing_the_joystick_number_and_undo_changes_it_back() {
+        let (mut app, dir, _) = app_with_rebinds("change-instance");
+        edit(&mut app, 0, "joystick", "js1_button3");
+        edit(&mut app, 1, "joystick", "js1_x | js3_y");
+        let before = rebinds_of(&app);
+
+        app.ask_instance_change("joystick".into());
+        let prompt = app.instance_prompt.take().expect("the box");
+        assert_eq!(prompt.in_use, [1, 3]);
+
+        app.change_instance("joystick", 1, 2);
+        assert_eq!(rebinds_of(&app), ["a: js2_button3", "a: kb1_x", "b: js2_x", "b: js3_y"]);
         app.undo_change();
         assert_eq!(rebinds_of(&app), before);
         std::fs::remove_dir_all(dir).ok();

@@ -150,7 +150,7 @@ const CLONE_DEFAULTS_TO_MENU_ITEM: &str = "Clone default bindings to";
 const REMOVE_BY_WILDCARDS_MENU_ITEM: &str = "Remove by * wildcards...";
 
 /// The device instances [`CLONE_DEFAULTS_TO_MENU_ITEM`] offers, from 1.
-const MAX_DEVICE_INSTANCE: u32 = 8;
+pub const MAX_DEVICE_INSTANCE: u32 = 8;
 
 /// How far from the edge of the visible cells a selection drag starts scrolling, in rows.
 const DRAG_SCROLL_ZONE: f32 = 1.;
@@ -211,6 +211,8 @@ pub struct TableOutput {
     pub clone_defaults_column: Option<(String, Option<u32>)>,
     /// The key of the column the user asked to remove bindings from by a wildcard pattern.
     pub wildcard_column: Option<String>,
+    /// The key of the column whose device numbers, like `js1_`, the user asked to change.
+    pub change_instance_column: Option<String>,
     /// Whether resolving conflicts ended because none are left.
     pub conflicts_resolved: bool,
 }
@@ -231,6 +233,9 @@ pub struct AttributeTable {
     /// The editable columns whose context menu offers [`CLONE_DEFAULTS_TO_MENU_ITEM`], by key,
     /// with the device prefix code of its submenu's instances, like `js` for `js1_`.
     clone_default_instances: HashMap<String, String>,
+    /// The editable columns whose context menu can change their bindings' device numbers, by
+    /// key, with the menu item text.
+    change_instance_items: HashMap<String, String>,
     /// Keys of the columns whose titles keep their case in the uppercase headers.
     exact_titles: HashSet<String>,
     editing: Option<Editing>,
@@ -258,6 +263,7 @@ impl AttributeTable {
             clear_empty_items: HashMap::new(),
             clone_default_columns: HashSet::new(),
             clone_default_instances: HashMap::new(),
+            change_instance_items: HashMap::new(),
             exact_titles: HashSet::new(),
             editing: None,
             resolving: None,
@@ -398,6 +404,12 @@ impl AttributeTable {
     /// like `js2_` for the code `js`.
     pub fn set_clone_default_instances(&mut self, columns: &[(&str, &str)]) {
         self.clone_default_instances = columns.iter().map(|(key, code)| (key.to_string(), code.to_string())).collect();
+    }
+
+    /// Gives the editable columns `items` (`(column key, menu item text)`) a context menu item
+    /// that asks to change the device number of the column's bindings, like `js1_` to `js2_`.
+    pub fn set_change_instance_items(&mut self, items: &[(&str, &str)]) {
+        self.change_instance_items = items.iter().map(|(key, text)| (key.to_string(), text.to_string())).collect();
     }
 
     /// Makes the titles of the columns with these keys keep their case in the dark theme,
@@ -852,6 +864,13 @@ impl AttributeTable {
                                         if ui.add_enabled(has_values, remove).clicked() {
                                             out.wildcard_column = Some(key.clone());
                                             ui.close();
+                                        }
+                                        if let Some(text) = self.change_instance_items.get(key) {
+                                            let change = egui::Button::new(text.as_str());
+                                            if ui.add_enabled(has_values, change).clicked() {
+                                                out.change_instance_column = Some(key.clone());
+                                                ui.close();
+                                            }
                                         }
                                     }
                                 });

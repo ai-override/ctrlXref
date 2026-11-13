@@ -74,11 +74,12 @@ profile and can't be edited.
   column, is refused.
 - Edits only ever change the rebind file. `defaultProfile.xml` is never written.
 - Right-click a **keyboard**, **mouse**, **joystick** or **gamepad** cell to clear the
-  column's bindings or its empty bindings, to clone the default bindings into it, or to remove
-  bindings matching a `*` wildcard pattern. **Help > Context Menus** describes these.
+  column's bindings or its empty bindings, to clone the default bindings into it, to remove
+  bindings matching a `*` wildcard pattern, or to change the joystick number of the joystick
+  column's bindings. **Help > Context Menus** describes these.
 - **Ctrl+Z** undoes the latest change to the rebinds, one step at a time, up to 100: cell edits,
   **Clear All Column Bindings**, **Clear all … empty bindings**, **Clone default bindings**,
-  **Remove by * wildcards** and **Autofill All Unbound Keyboard Controls**. In a text field it
+  **Remove by * wildcards**, **Change Joystick number** and **Autofill All Unbound Keyboard Controls**. In a text field it
   undoes your typing instead, so click the table first. Opening or closing a file forgets the steps.
 - The **DEFAULT from: Data.p4k R/O** column, in light blue, shows the default bindings that come from the
   game engine through `defaultProfile.xml`, for all devices. It is read-only:

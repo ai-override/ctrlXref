@@ -88,3 +88,22 @@ is empty. A box opens with a text field:
 | `kb1_` | the empty binding `kb1_ ` | `kb1_w` |
 
 **Ctrl+Z** brings the removed bindings back if the pattern caught more than you meant.
+
+### Change Joystick number...
+
+In the joystick column. Moves the bindings of one stick to another number, for example after
+Windows has numbered your sticks differently. It opens a box with two lists:
+
+- **From** lists only the stick numbers the column's bindings use now, like `js1_` and
+  `js3_`. When there is just one, it is already selected.
+- **To** lists all numbers, `js1_` to `js8_`; the ones in use are marked **(in use)**.
+
+**Change** moves every binding of the From stick to the To stick: `js1_button3` becomes
+`js2_button3` for `js1_` to `js2_`. Only the stick number changes; each binding keeps its other
+settings, like `activationMode`. **Cancel** changes nothing.
+
+If the To stick already has bindings, the two are merged and a warning in the box says so.
+When an action then has the same binding twice, it is kept once. To swap two sticks, move one
+to an unused number first: `js1_` to `js8_`, `js2_` to `js1_`, then `js8_` to `js2_`.
+
+**Ctrl+Z** changes the numbers back.
