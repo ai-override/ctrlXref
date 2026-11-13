@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ctrlxref::localization::Strings;
 use ctrlxref::rebinds::{
@@ -138,11 +138,33 @@ struct Document {
     /// Whether another rebind file was merged into it, so that it is no longer what `rebind_path`
     /// holds plus edits and Save Rebind File is off.
     merged: bool,
+    /// `rebind_path` as it was when opened or last saved here, to tell when another program,
+    /// such as the game's control editor, changes it; `None` while it is missing.
+    rebind_stamp: Option<FileStamp>,
+    /// A changed stamp seen by the last check, acted on once the next check sees it unchanged,
+    /// so a file still being written is not read.
+    changed_stamp: Option<Option<FileStamp>>,
     /// Texts for `@key` references.
     strings: Rc<Strings>,
     /// Actions with a blank keyboard cell in the table, rebinds applied.
     empty_keyboard_rows: usize,
 }
+
+/// When a file was last written and how big it is, to tell whether another program changed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+/// The stamp of the file at `path`, or `None` when it cannot be read, as when it is missing.
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(FileStamp { modified: meta.modified().ok(), len: meta.len() })
+}
+
+/// How often the open rebind file is checked for changes made by other programs.
+const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Level {
@@ -202,6 +224,15 @@ enum DialogAction {
     DiscardThen(AfterPrompt),
     /// Removes the empty rebinds of this device column, after [`clear_empty_warning`].
     ClearEmptyBindings(String),
+    /// Adds the bindings of the rebind file, as another program changed it, to the open one,
+    /// after [`outside_change_warning`].
+    MergeOutsideChanges,
+    /// Saves the open rebind file's changes to a new working copy and goes on with that, after
+    /// [`outside_change_warning`].
+    SaveWorkingCopy,
+    /// Opens the rebind file again as another program changed it, dropping any changes here,
+    /// after [`outside_change_warning`].
+    ReloadOutsideChanges,
 }
 
 /// The open rebind file's state before one change to it.
@@ -275,6 +306,8 @@ struct Dialog {
     list: Vec<String>,
     confirm: Option<(&'static str, &'static str, DialogAction)>,
     extra: Option<(&'static str, DialogAction)>,
+    /// Another button, between `extra` and the cancel button.
+    more: Option<(&'static str, DialogAction)>,
     /// A phrase drawn like the Default column's bindings wherever it occurs in `message`.
     highlight: Option<&'static str>,
     width: f32,
@@ -289,6 +322,7 @@ impl Dialog {
             list: Vec::new(),
             confirm: None,
             extra: None,
+            more: None,
             highlight: None,
             width: 480.,
         }
@@ -304,6 +338,7 @@ impl Dialog {
             list: Vec::new(),
             confirm: Some(("Open in Explorer", "Close", show)),
             extra: None,
+            more: None,
             highlight: None,
             width: 480.,
         }
@@ -362,10 +397,11 @@ pub struct CtrlXrefApp {
     /// The Star Citizen installation folder picked with Source > Locate Star Citizen Game Folder,
     /// or saved in the registry by an earlier run.
     game_dir: Option<PathBuf>,
-    /// The full game build in [`Self::game_dir`]'s [`game_dir::BUILD_MANIFEST`], shown in the
-    /// menu bar; read when the game folder is set and when the window gets focus, not every
-    /// frame.
-    game_version: Option<String>,
+    /// The game version in [`Self::game_dir`], shown in the menu bar; read when the game folder
+    /// is set and when the window gets focus, not every frame.
+    game_version: Option<game_dir::GameVersion>,
+    /// When to check the open rebind file for changes made by other programs next.
+    next_watch: Instant,
     /// The result of the running Extract Defaults, so it is not started twice.
     extracting: Option<Receiver<anyhow::Result<()>>>,
     /// The startup profile argument while it waits for a game folder or an extraction
@@ -443,6 +479,7 @@ impl CtrlXrefApp {
             scroll_table_to: None,
             game_dir: saved_game_dir,
             game_version,
+            next_watch: Instant::now(),
             extracting: None,
             startup_profile: Some(initial_file),
             startup_rebind: initial_rebind_file,
@@ -609,6 +646,8 @@ impl CtrlXrefApp {
             rebind_path: None,
             rebind_root: None,
             merged: false,
+            rebind_stamp: None,
+            changed_stamp: None,
             strings,
             empty_keyboard_rows: 0,
             path,
@@ -645,6 +684,8 @@ impl CtrlXrefApp {
     /// Loads the rebind file at `path` and shows its inputs in the table's rebind column,
     /// matched to the open profile's actions by actionmap and action name.
     fn open_rebind_path(&mut self, path: PathBuf) {
+        // Taken before reading, so a change made meanwhile is still noticed.
+        let stamp = file_stamp(&path);
         // Empty rebinds like `kb1_ ` stay: in the game they unbind that device's default.
         let root = match xml_doc::load(&path) {
             Ok(root) => root,
@@ -660,6 +701,8 @@ impl CtrlXrefApp {
         let unmatched = unmatched_actions(&rebinds, &profile_actions(doc)).len();
         let note = format!("{} of {} rebinds matched from {}", rebinds.len() - unmatched, rebinds.len(), path.display());
         doc.rebinds = rebinds;
+        doc.rebind_stamp = stamp;
+        doc.changed_stamp = None;
         doc.rebind_path = Some(path);
         doc.rebind_root = Some(root);
         doc.merged = false;
@@ -689,6 +732,23 @@ impl CtrlXrefApp {
     /// Appends the bindings of the rebind file at `path` to the open one, conflicting ones
     /// included, for the user to choose from in the table. Ctrl+Z takes them out again.
     fn merge_rebind_path(&mut self, path: &Path) {
+        self.merge_rebinds_from(path, false);
+    }
+
+    /// Adds the bindings of the open rebind file, as another program changed it, to the ones
+    /// here. Unlike merging another file, Save Rebind File stays on: the file's own bindings are
+    /// all kept, so saving over it loses none of them.
+    fn merge_outside_changes(&mut self) {
+        if let Some(path) = self.rebind_path() {
+            self.merge_rebinds_from(&path, true);
+        }
+    }
+
+    /// Merges the rebind file at `path` into the open one: another file, or with `outside`, the
+    /// open one itself as another program changed it.
+    fn merge_rebinds_from(&mut self, path: &Path, outside: bool) {
+        // Taken before reading, so a change made meanwhile is still noticed.
+        let stamp = file_stamp(path);
         let other = match xml_doc::load(path) {
             Ok(other) => other,
             Err(err) => {
@@ -699,26 +759,37 @@ impl CtrlXrefApp {
         let Some(doc) = &mut self.document else {
             return;
         };
+        if outside {
+            doc.rebind_stamp = stamp;
+            doc.changed_stamp = None;
+        }
         let Some(rebind_root) = &mut doc.rebind_root else {
             return;
         };
         let before = rebind_root.clone();
         let added = merge_rebinds(rebind_root, &other);
         if added == 0 {
-            self.notify(Level::Info, format!("{} has no bindings to add", path.display()));
+            let note = if outside {
+                format!("The changes to {} add no bindings to yours", path.display())
+            } else {
+                format!("{} has no bindings to add", path.display())
+            };
+            self.notify(Level::Info, note);
             return;
         }
         doc.rebinds = read_rebinds(rebind_root);
-        let first_merge = !std::mem::replace(&mut doc.merged, true);
+        let first_merge = !outside && !std::mem::replace(&mut doc.merged, true);
         let unmatched = unmatched_actions(&read_rebinds(&other), &profile_actions(doc)).len();
-        self.undo.push("merging a rebind file".into(), before, self.rebinds_modified);
+        let label = if outside { "merging the outside changes" } else { "merging a rebind file" };
+        self.undo.push(label.into(), before, self.rebinds_modified);
         if let Some(step) = self.undo.0.last_mut() {
             step.first_merge = first_merge;
         }
         self.rebinds_modified = true;
         self.refresh_table();
+        let keep = if outside { "Save Rebind File" } else { "Save Rebind Copy As" };
         let note = format!(
-            "Added {added} bindings from {}. Conflicts are shown in red. Use Save Rebind Copy As to keep this",
+            "Added {added} bindings from {}. Conflicts are shown in red. Use {keep} to keep this",
             path.display()
         );
         self.notify(Level::Success, note);
@@ -1521,12 +1592,111 @@ impl CtrlXrefApp {
         };
         match xml_doc::save(root, path) {
             Ok(()) => {
+                self.note_written(path);
                 self.rebinds_modified = false;
                 self.undo.mark_saved();
                 self.dialogs.push(Dialog::saved(format!("Saved {}", path.display()), path));
             }
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
         }
+    }
+
+    /// Notes that the file at `path` was written here, so that when it is the open rebind file,
+    /// the write is not taken for a change by another program.
+    fn note_written(&mut self, path: &Path) {
+        if let Some(doc) = &mut self.document
+            && doc.rebind_path.as_deref() == Some(path)
+        {
+            doc.rebind_stamp = file_stamp(path);
+            doc.changed_stamp = None;
+        }
+    }
+
+    /// Checks the open rebind file for changes made by another program, such as the game's
+    /// control editor, every [`WATCH_INTERVAL`] and when the window gets the focus.
+    fn watch_rebind_file(&mut self, ctx: &Context) {
+        let watching = self.document.as_ref().is_some_and(|doc| doc.rebind_root.is_some());
+        if !watching {
+            return;
+        }
+        let focused = ctx.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::WindowFocused(true))));
+        let now = Instant::now();
+        if focused || now >= self.next_watch {
+            self.next_watch = now + WATCH_INTERVAL;
+            self.check_rebind_file();
+        }
+        ctx.request_repaint_after(self.next_watch.saturating_duration_since(now));
+    }
+
+    /// Acts on a change to the open rebind file made by another program, once the file has
+    /// stayed the same since the check before, so that one still being written is not read:
+    /// [`outside_change_warning`] asks what to do.
+    fn check_rebind_file(&mut self) {
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        let Some(path) = doc.rebind_path.clone().filter(|_| doc.rebind_root.is_some()) else {
+            return;
+        };
+        let stamp = file_stamp(&path);
+        if stamp == doc.rebind_stamp {
+            doc.changed_stamp = None;
+            return;
+        }
+        if doc.changed_stamp != Some(stamp) {
+            doc.changed_stamp = Some(stamp);
+            return;
+        }
+        doc.changed_stamp = None;
+        doc.rebind_stamp = stamp;
+        if stamp.is_none() {
+            self.notify(
+                Level::Warning,
+                format!(
+                    "{} was removed or renamed outside ctrlXref. Save Rebind File writes it again",
+                    path.display()
+                ),
+            );
+        } else if !self.dialogs.iter().any(is_outside_change_warning) {
+            // Once asked, the answer reads the file as it is then.
+            self.dialogs.push(outside_change_warning(&path, self.rebinds_modified));
+        }
+    }
+
+    /// Saves the open rebind file's changes to a new working copy, next to it or, for the game's
+    /// current actionmaps.xml, in the game's mappings folder, and goes on with that copy. The
+    /// file another program changed is left as it is, to merge later.
+    fn save_working_copy(&mut self) {
+        let Some(path) = self.rebind_path() else {
+            return;
+        };
+        let working = working_copy_path(&path);
+        let Some(root) = self.document.as_ref().and_then(|doc| doc.rebind_root.as_ref()) else {
+            return;
+        };
+        if let Err(err) = xml_doc::save(root, &working) {
+            self.notify(Level::Error, format!("{err:#}"));
+            return;
+        }
+        let Some(doc) = &mut self.document else {
+            return;
+        };
+        doc.rebind_path = Some(working.clone());
+        doc.rebind_stamp = file_stamp(&working);
+        doc.changed_stamp = None;
+        // The copy holds all of it, so saving over the copy loses nothing.
+        doc.merged = false;
+        self.rebinds_modified = false;
+        self.undo.mark_saved();
+        self.update_title();
+        let message = format!(
+            "Your changes were saved to the working copy\n{}\nwhich is now the open rebind file.\n\n\
+             The file changed outside ctrlXref was left as it is:\n{}\n\n\
+             To combine them later, use File > Merge Rebind File with it.",
+            working.display(),
+            path.display()
+        );
+        self.dialogs.push(Dialog::saved(message, &working));
     }
 
     /// The window was asked to close, by File > Exit, Ctrl+Q or its X button. With rebinds that
@@ -1604,6 +1774,7 @@ impl CtrlXrefApp {
         };
         match xml_doc::save(root, path) {
             Ok(()) => {
+                self.note_written(path);
                 self.rebinds_modified = false;
                 self.undo.mark_saved();
                 self.proceed(after);
@@ -1645,7 +1816,10 @@ impl CtrlXrefApp {
         };
         set_header_label(&mut root, label);
         match xml_doc::save(&root, &path) {
-            Ok(()) => self.dialogs.push(Dialog::saved(format!("Saved copy to {}", path.display()), &path)),
+            Ok(()) => {
+                self.note_written(&path);
+                self.dialogs.push(Dialog::saved(format!("Saved copy to {}", path.display()), &path));
+            }
             Err(err) => self.notify(Level::Error, format!("{err:#}")),
         }
     }
@@ -2011,6 +2185,7 @@ impl CtrlXrefApp {
             list: list.lines().map(str::to_string).collect(),
             confirm: Some(("Copy", "Close", DialogAction::Copy(copy))),
             extra: None,
+            more: None,
             highlight: None,
             width: 760.,
         });
@@ -2047,6 +2222,7 @@ impl CtrlXrefApp {
             list: Vec::new(),
             confirm: None,
             extra: None,
+            more: None,
             highlight: Some("Star Citizen"),
             width: 560.,
         });
@@ -2159,6 +2335,13 @@ impl CtrlXrefApp {
             DialogAction::SaveAsThen(after) => self.save_as_after = Some(after),
             DialogAction::DiscardThen(after) => self.proceed(after),
             DialogAction::ClearEmptyBindings(device) => self.clear_empty_column(&device),
+            DialogAction::MergeOutsideChanges => self.merge_outside_changes(),
+            DialogAction::SaveWorkingCopy => self.save_working_copy(),
+            DialogAction::ReloadOutsideChanges => {
+                if let Some(path) = self.rebind_path() {
+                    self.open_rebind_path(path);
+                }
+            }
         }
     }
 
@@ -2174,13 +2357,24 @@ impl CtrlXrefApp {
                 }
                 ui.label(RichText::new(format!("v{VERSION}")).small().weak())
                     .on_hover_text(format!("ctrlXref version {VERSION}; Help > About ctrlXref tells more"));
-                if let Some(full) = &self.game_version {
-                    let short = game_dir::short_version(full).unwrap_or_else(|| full.clone());
-                    ui.label(RichText::new(format!("Game version: LIVE V{short}")).small().weak())
-                        .on_hover_text(format!(
-                            "Star Citizen build {full} from {}",
-                            game_dir::BUILD_MANIFEST
-                        ));
+                if let Some(version) = &self.game_version {
+                    let build = &version.build;
+                    match (&version.release, &version.changelist) {
+                        (Some(release), Some(changelist)) => {
+                            ui.label(RichText::new(format!("Game version: LIVE V{release}")).small().weak())
+                                .on_hover_text(format!(
+                                    "Star Citizen {release}-LIVE.{changelist}, build {build}"
+                                ));
+                        }
+                        _ => {
+                            ui.label(RichText::new(format!("Game build: {build}")).small().weak())
+                                .on_hover_text(format!(
+                                    "Star Citizen build {build} from {}; the release name was not \
+                                     found in the RSI Launcher's log",
+                                    game_dir::BUILD_MANIFEST
+                                ));
+                        }
+                    }
                 }
             });
         });
@@ -2330,6 +2524,7 @@ impl CtrlXrefApp {
         let Some(dialog) = self.dialogs.first() else {
             return;
         };
+        let sticky = is_outside_change_warning(dialog);
         let mut close = false;
         let mut action = None;
         let response = egui::Modal::new(Id::unique("dialog")).show(ctx, |ui| {
@@ -2360,11 +2555,11 @@ impl CtrlXrefApp {
                         action = Some(confirm.clone());
                         close = true;
                     }
-                    if let Some((label, extra)) = &dialog.extra
-                        && ui.button(*label).clicked()
-                    {
-                        action = Some(extra.clone());
-                        close = true;
+                    for (label, extra) in dialog.extra.iter().chain(&dialog.more) {
+                        if ui.button(*label).clicked() {
+                            action = Some(extra.clone());
+                            close = true;
+                        }
                     }
                     if ui.button(*cancel).clicked() {
                         close = true;
@@ -2377,7 +2572,8 @@ impl CtrlXrefApp {
                 }
             });
         });
-        if close || response.should_close() {
+        // A change made by another program waits for an answer: no Esc or click outside.
+        if close || (response.should_close() && !sticky) {
             self.dialogs.remove(0);
         }
         if let Some(action) = action {
@@ -2719,6 +2915,7 @@ impl eframe::App for CtrlXrefApp {
             self.on_close_requested();
         }
         self.poll_extraction();
+        self.watch_rebind_file(&ctx);
         // The launcher may have patched the game while the window was in the background.
         if ctx.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::WindowFocused(true)))) {
             self.game_version = self.game_dir.as_deref().and_then(game_dir::game_version);
@@ -2857,6 +3054,75 @@ fn unsaved_rebinds_warning(path: &Path, after: AfterPrompt, merged: bool) -> Dia
         ("Save", "Cancel", DialogAction::SaveThen(after))
     });
     dialog
+}
+
+/// Asks what to do now that another program, such as the game's control editor, changed the
+/// rebind file at `path`; with `modified`, while it has changes here that are not saved. It stays
+/// open until a button is clicked.
+fn outside_change_warning(path: &Path, modified: bool) -> Dialog {
+    const RELOAD: &str = "Reload modified file";
+    const IGNORE: &str = "Ignore changes";
+    let changed = format!(
+        "This rebind file was changed outside ctrlXref, for example by the game's control editor or \
+         another editor:\n{}",
+        path.display()
+    );
+    if !modified {
+        let message = format!(
+            "{changed}\n\n\
+             Reload modified file opens it again as it is now.\n\n\
+             Ignore changes keeps the bindings shown here. Saving then overwrites the other \
+             program's changes."
+        );
+        let mut dialog = Dialog::warning("Rebind file changed outside ctrlXref", message);
+        dialog.confirm = Some((RELOAD, IGNORE, DialogAction::ReloadOutsideChanges));
+        dialog.width = 560.;
+        return dialog;
+    }
+    let message = format!(
+        "{changed}\n\nYou have changes here that are not saved.\n\n\
+         Merge Changes adds the other program's bindings to yours. Conflicting ones are shown in red, \
+         and Ctrl+Z takes them out again. Bindings the other program removed stay in yours.\n\n\
+         Save Working Copy saves your changes to a new file and goes on with that, leaving the \
+         changed file as it is, to merge later with File > Merge Rebind File.\n\n\
+         Reload modified file opens it again as it is now, dropping your changes.\n\n\
+         Ignore changes keeps your changes as they are. Saving then overwrites the other program's \
+         changes."
+    );
+    let mut dialog = Dialog::warning("Rebind file changed outside ctrlXref", message);
+    dialog.confirm = Some(("Merge Changes", IGNORE, DialogAction::MergeOutsideChanges));
+    dialog.extra = Some(("Save Working Copy", DialogAction::SaveWorkingCopy));
+    dialog.more = Some((RELOAD, DialogAction::ReloadOutsideChanges));
+    dialog.width = 560.;
+    dialog
+}
+
+/// Whether `dialog` is the [`outside_change_warning`].
+fn is_outside_change_warning(dialog: &Dialog) -> bool {
+    let actions = dialog.confirm.iter().map(|(_, _, action)| action);
+    let buttons = dialog.extra.iter().chain(&dialog.more).map(|(_, action)| action);
+    actions.chain(buttons).any(|action| matches!(action, DialogAction::ReloadOutsideChanges))
+}
+
+/// A new file for a working copy of the rebind file at `path`: `<name>_working.xml`, numbered
+/// when that exists. The game's current actionmaps.xml gets it in the game's mappings folder,
+/// where the rebind file boxes start, when that folder exists; other files get it next to them.
+fn working_copy_path(path: &Path) -> PathBuf {
+    let mappings = is_current_rebind(path)
+        // `<client\0>\Profiles\default\actionmaps.xml` → `<client\0>\controls\mappings`.
+        .then(|| path.ancestors().nth(3))
+        .flatten()
+        .map(|client| client.join(r"controls\mappings"))
+        .filter(|dir| dir.is_dir());
+    let dir = mappings.or_else(|| path.parent().map(Path::to_path_buf)).unwrap_or_default();
+    let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+    (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("{stem}_working.xml")),
+            n => dir.join(format!("{stem}_working_{n}.xml")),
+        })
+        .find(|candidate| !candidate.exists())
+        .expect("a free name")
 }
 
 /// Explains that an empty rebind unbinds the action's default `device` binding, and asks
@@ -3745,6 +4011,132 @@ mod tests {
         assert!(!app.can_save());
         app.open_rebind_path(rebind);
         assert!(app.can_save());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Writes the rebind file as another program would, with action `a` bound to `input`.
+    fn write_outside(rebind: &Path, input: &str) {
+        let xml = format!(
+            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="{input}"/></action></actionmap></ActionMaps>"#
+        );
+        std::fs::write(rebind, xml).unwrap();
+    }
+
+    #[test]
+    fn an_outside_change_counts_once_the_file_is_unchanged_for_a_check() {
+        let (mut app, dir, rebind) = app_with_rebinds("outside-settle");
+        app.check_rebind_file();
+        assert!(app.dialogs.is_empty());
+        edit(&mut app, 0, "keyboard", "kb1_y");
+        write_outside(&rebind, "kb1_outside");
+        // Still being written, maybe: wait for the next check.
+        app.check_rebind_file();
+        assert!(app.dialogs.is_empty());
+        app.check_rebind_file();
+        assert!(app.dialogs.len() == 1 && super::is_outside_change_warning(&app.dialogs[0]));
+        // Asked once, not again on every check.
+        app.check_rebind_file();
+        app.check_rebind_file();
+        assert_eq!(app.dialogs.len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn saving_here_is_no_outside_change() {
+        let (mut app, dir, rebind) = app_with_rebinds("outside-own-save");
+        edit(&mut app, 0, "keyboard", "kb1_longer_input");
+        app.write_rebind_file(&rebind);
+        app.dialogs.clear();
+        app.check_rebind_file();
+        app.check_rebind_file();
+        assert!(app.dialogs.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_outside_change_without_changes_here_asks_to_reload_or_ignore() {
+        let (mut app, dir, rebind) = app_with_rebinds("outside-reload");
+        write_outside(&rebind, "kb1_outside");
+        app.check_rebind_file();
+        app.check_rebind_file();
+        let dialog = app.dialogs.first().expect("asked");
+        assert!(super::is_outside_change_warning(dialog));
+        assert!(matches!(
+            dialog.confirm,
+            Some(("Reload modified file", "Ignore changes", DialogAction::ReloadOutsideChanges))
+        ));
+        assert!(dialog.extra.is_none() && dialog.more.is_none());
+        // Nothing changes until it is answered.
+        assert_eq!(rebinds_of(&app), ["a: kb1_x"]);
+        app.dialogs.clear();
+        app.run_dialog_action(DialogAction::ReloadOutsideChanges);
+        assert_eq!(rebinds_of(&app), ["a: kb1_outside"]);
+        assert!(!app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn reloading_an_outside_change_drops_the_changes_here() {
+        let (mut app, dir, rebind) = app_with_rebinds("outside-reload-modified");
+        edit(&mut app, 1, "keyboard", "kb1_b");
+        write_outside(&rebind, "kb1_outside");
+        app.check_rebind_file();
+        app.check_rebind_file();
+        let dialog = app.dialogs.first().expect("asked");
+        assert!(matches!(dialog.more, Some(("Reload modified file", DialogAction::ReloadOutsideChanges))));
+        assert!(matches!(dialog.confirm, Some(("Merge Changes", "Ignore changes", _))));
+        app.dialogs.clear();
+        app.run_dialog_action(DialogAction::ReloadOutsideChanges);
+        assert_eq!(rebinds_of(&app), ["a: kb1_outside"]);
+        assert!(!app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn merging_outside_changes_keeps_save_on() {
+        let (mut app, dir, rebind) = app_with_rebinds("outside-merge");
+        edit(&mut app, 1, "keyboard", "kb1_b");
+        write_outside(&rebind, "kb1_outside");
+        app.check_rebind_file();
+        app.check_rebind_file();
+        app.dialogs.clear();
+        app.run_dialog_action(DialogAction::MergeOutsideChanges);
+        assert_eq!(rebinds_of(&app), ["a: kb1_outside", "a: kb1_x", "b: kb1_b"]);
+        assert!(app.rebinds_modified && app.can_save());
+        // The merge read the file as it is, so that is no change any more.
+        app.check_rebind_file();
+        app.check_rebind_file();
+        assert!(app.dialogs.is_empty());
+        app.undo_change();
+        assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: kb1_b"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_working_copy_takes_the_changes_and_leaves_the_changed_file() {
+        let (mut app, dir, rebind) = app_with_rebinds("outside-working");
+        edit(&mut app, 1, "keyboard", "kb1_b");
+        write_outside(&rebind, "kb1_outside");
+        std::fs::write(dir.join("rebinds_working.xml"), "taken").unwrap();
+        app.run_dialog_action(DialogAction::SaveWorkingCopy);
+        let working = dir.join("rebinds_working_2.xml");
+        assert_eq!(app.document.as_ref().unwrap().rebind_path.as_ref(), Some(&working));
+        assert!(!app.rebinds_modified && app.can_save());
+        assert!(std::fs::read_to_string(&working).unwrap().contains("kb1_b"));
+        assert!(std::fs::read_to_string(&rebind).unwrap().contains("kb1_outside"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn working_copies_of_the_games_file_go_to_its_mappings_folder() {
+        let dir = std::env::temp_dir().join(format!("ctrlxref-working-path-{}", std::process::id()));
+        let client = dir.join(r"LIVE\user\client\0");
+        let mappings = client.join(r"controls\mappings");
+        std::fs::create_dir_all(&mappings).unwrap();
+        let current = client.join(r"Profiles\default\actionmaps.xml");
+        assert_eq!(super::working_copy_path(&current), mappings.join("actionmaps_working.xml"));
+        let other = dir.join("mine.xml");
+        assert_eq!(super::working_copy_path(&other), dir.join("mine_working.xml"));
         std::fs::remove_dir_all(dir).ok();
     }
 

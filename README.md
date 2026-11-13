@@ -3,23 +3,26 @@
 
 A Windows desktop tool for viewing and modifying [Star Citizen](https://robertsspaceindustries.com/) control bindings. ctrlXref cross-references the game's default control profile with your own custom rebind files. You will be able to see and modify every action and its bindings in a single table. Merging multiple custom rebind files from various sources is now supported for creating a new custom binding with all your preferred bindings.
 ### What it's not
-ctrlXref does not identify as a [Star Citizen](https://robertsspaceindustries.com/) control profile editor, as the application lacks proper modeling of the various devices and the controls they provide. You can manipulate the controls manually inside the table cells, but there are no dialogs, dropdowns, key or button press capture, etc. You are encouraged to use the game's integrated control editor or some other 3rd party solution (such as the great [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your control settings.  
+
+
+ctrlXref does not identify as a [Star Citizen](https://robertsspaceindustries.com/) control profile editor, as the application lacks proper modeling of the various devices and the controls they provide. You can manipulate the controls manually inside the table cells, but there are only a handful of dialogs, dropdowns and no key or button press etc. capture features. You are hereby encouraged to use the Game's integrated control editor or some other 3rd party solution (such as the great [Star Citizen Profile Editor](https://github.com/Osiris-DevWorks/sc-profile-editor)) to actually create your control settings profiles.  
 
 > [!NOTE]
 > ctrlXref is an unofficial fan project and is not affiliated with or endorsed by Cloud Imperium Games.
 
 > [!WARNING]
-> Work In Progress! This application is still an early development release with testing of the functionality hardly started.
+> Work In Progress! This application is still an early development with testing of the functionality hardly started.
 > Make manual backups of your controls under `StarCitizen\LIVE\user\client\0\controls\mappings\` before using ctrlXref 
-> as modifications made by this application are ***not reversible*** and might not work within the actual game.
+> as modifications made by this application are ***not reversible*** and might not work properly or at all within the actual game.
 
 ## Features
 
-- Browse all ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, using the game's own English labels.
-- See default bindings side by side with your rebinds for keyboard, mouse, joysticks and gamepad.
+- Does not need to / should not be open when playing Star Citizen as it only manipulates control profile files the actual game uses.
+- It reads all the ***\<actionmap>*** and ***\<action>*** elements from `defaultProfile.xml`, and shows them using the game's own English labels.
+- See the game-engine default bindings side by side with your rebinds for keyboard, mouse, joystick(s) and gamepad.
 - Edit bindings directly in the table, with possible conflicts shown in red.
-- Merge multiple custom rebind files to create your preferred control setup and confirm which controls are truly bound to what action.
-- Conflicting controls manual resolving support (TODO improved edit features later).
+- Merge multiple custom rebind files to create your preferred control setup and to get a confirmation on which controls are truly bound to what action.
+- Conflicting controls manual resolving support (TODO improved edit features sWork In Progress).
 - Move or remove bindings of actions that older rebind files name but the game engine's current profile no longer has, with suggested renamed or moved actions.
 - List the game's control name list with examples in a sortable table.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
@@ -33,16 +36,17 @@ ctrlXref does not identify as a [Star Citizen](https://robertsspaceindustries.co
 - Remove bindings from a column by wildcard `*` matching.
 - Change joystick numbers from the context menu. Example: from js2_ to js8_ (numbers 1-8 are available in the game engine, at least in theory; probably at most 5 are really supported currently). NOTE! Swapping two numbers is doable by first moving one to a free number temporarily and then moving the other where the first was... you get the idea, I'm sure.
 - The Star Citizen game version and the ctrlXref version are shown in the menu bar, beside the theme selector.
+- Notice when the open rebind file is changed by another program, like the game's control editor. With unsaved changes, merge the other program's changes into yours or save yours as a working copy to merge later.
 
 
-ctrlXref writes only to rebind files. It never changes `Data.p4k` or `defaultProfile.xml`. Saving the current bindings `actionmaps.xml` spawns a Warning as the file will be overwritten by the game engine on configuration modifications.
+ctrlXref writes only to profile rebind xml files. It never changes `Data.p4k` or `defaultProfile.xml`. Saving the current bindings `actionmaps.xml` spawns a Warning as the file will be overwritten by the game engine on configuration modifications.
 
 ## Requirements
 
 - Windows 10 or later 64bit
-- A Star Citizen installation (or a valid Star Citizen Game `Data.p4k` under `StarCitizen\LIVE\` folder)
+- A Star Citizen installation (or just a valid Star Citizen Game `Data.p4k` under `StarCitizen\LIVE\` folder)
 - The [unp4k tools](#install-the-unp4k-tools), to extract the default controls from the game data
-- [Rust](https://www.rust-lang.org/tools/install) (current stable, with the MSVC toolchain), to build from source
+- [Rust](https://www.rust-lang.org/tools/install) (current stable, with the MSVC toolchain), Only needed for building from source.
 
 > [!NOTE]
 > ctrlXref works with the **LIVE** version of the game only. It does not handle **PTU** (or other test channel) installations.
@@ -155,6 +159,138 @@ cargo test      # Run the tests
 ```
 
 `version.txt` holds the application version. `build.rs` raises its patch number on the first build of each day with source changes, so the file regularly shows as modified.
+
+### Basic usage session sequence
+This chart describes in detail the actions taken on a normal session. It explains most internal and user actions but does not go into pseudocode level of detail.  
+```mermaid
+sequenceDiagram
+actor SC Player
+SC Player->>ctrlXref: Launch application
+Note over System: Check Star Citizen install location from registry
+System-->>ctrlXref: Not Found
+loop Locate Valid Star Citizen install location
+ctrlXref-->>SC Player: Prompt Locate Star Citizen folder
+SC Player->>ctrlXref: Browse for Star Citizen
+ctrlXref->>System: Validate folder/file structure
+Note over System: File system and extraction tools present?
+System-->>ctrlXref: Found and Valid!
+end
+Note over ctrlXref: Store Star Citizen folder location in registry
+ctrlXref->>System: Extract defaults
+System-->>ctrlXref:
+ctrlXref->>System: Deserialize defaults
+System-->>ctrlXref:
+ctrlXref->>StarCitizen: Collect Game Version Info
+StarCitizen-->>ctrlXref:
+ctrlXref->>StarCitizen: Load defaultProfile.xml
+StarCitizen-->>ctrlXref:
+ctrlXref->>StarCitizen: Map Action Names with global.ini
+StarCitizen-->>ctrlXref:
+ctrlXref->>ctrlXref: Build / Update Ui Default ActionMaps tree and Actions Table
+ctrlXref->>ctrlXref: Update Actiona Default From Data.p4k R/O Column data
+Note over ctrlXref: Wait for User Input
+SC Player->>ctrlXref: Load Custom (or Current) Rebind
+ctrlXref->>StarCitizen: Load Rebind from LIVE\user\client\0\controls\mappings
+StarCitizen-->>ctrlXref:
+Note over ctrlXref: Check for Orphaned / Faulty bindings
+ctrlXref-->>SC Player: Ask for Resolving Orders
+SC Player->>ctrlXref: Resolve Orphaned Conflicting
+ctrlXref->>ctrlXref: Update Actions Table
+ctrlXref-->>SC Player:
+Note right of SC Player: Modify opened rebind profile
+loop Bindings Editing
+SC Player->>ctrlXref: Do Manual Modifications 
+ctrlXref->>ctrlXref: Update Actions Table
+ctrlXref-->>SC Player: Accept edits or Warn
+end
+Note right of SC Player: Merging more Rebind profiles
+loop Merge Additional Rebinds
+SC Player->>ctrlXref: Open Rebind xml for Merging
+ctrlXref->>StarCitizen: Load Rebind from LIVE\user\client\0\controls\mappings
+StarCitizen-->>ctrlXref:
+ctrlXref->>ctrlXref: Update Controls Table
+loop Bindings Editing
+SC Player->>ctrlXref: Do Manual Merging and editing
+ctrlXref->>ctrlXref: Update Actions Table
+ctrlXref-->>SC Player: Accept / Warn editing
+end
+end
+SC Player->>ctrlXref: Save
+ctrlXref->>StarCitizen: Save using the first Imported Filename
+Note over System: In-game Control profile Name remains unchanged
+StarCitizen-->>ctrlXref: Save status
+SC Player->>ctrlXref: Save Rebind Copy as.. 
+ctrlXref-->>SC Player:Prompt for In-Game Profile name
+SC Player->>ctrlXref: Provide In-game name for Save As
+ctrlXref->>ctrlXref: Modify Profile In-Game configurator visual Name
+ctrlXref->>StarCitizen: Save using provided File name
+Note over System: In-game Control profile Name from SC Player input
+StarCitizen-->>ctrlXref: Save status
+SC Player->>ctrlXref: Close and Exit
+Note over ctrlXref : If Control Rebind Profiles have been modified
+ctrlXref-->>SC Player: Warn for Unsaved modifications
+SC Player->>ctrlXref: Close and Exit Anyway
+```
+
+### Update / Merge preferred bindings sequence
+Sequence explaining one possible usage sequence in more detail. Here we assume the game version has just updated and some of your device bindings stopped working completely, or they somehow behave different than you'd expect.
+```mermaid
+sequenceDiagram
+actor SC Player
+SC Player->>ctrlXref: Locate the ctrlXref application
+SC Player->>Internet: Download latest profile xml for your devices e.g. GameGalss
+Internet-->>ctrlXref:
+SC Player->>Internet: Download latest profile xml for your devices e.g. Stream Decks
+Internet-->>ctrlXref:
+SC Player->>Internet: Download latest profile xml for your devices e.g. iCUE etc.
+Internet-->>ctrlXref:
+
+SC Player->>ctrlXref: Launch application
+
+SC Player->>ctrlXref: [Optional] Open the Current Rebind File
+Note over ctrlXref: Current Rebind has your most recent configuration from game-engine
+
+SC Player->>ctrlXref: [Optional] Clone Defaults to Device Columns
+Note over ctrlXref: Clone the default bindings into device columns to find and resolve the "collisions"
+loop Merge the Updated Device Downloaded Rebinds
+SC Player->>ctrlXref: Open Device specific rebind xml for Merging
+ctrlXref->>ctrlXref: Load the Rebind from LIVE\user\client\0\controls\mappings
+
+ctrlXref->>ctrlXref: Update Controls Table
+loop Bindings Editing
+SC Player->>ctrlXref: Merge the device specific bindings
+ctrlXref->>ctrlXref: Update Actions Table
+ctrlXref-->>SC Player: Accept / Warn editing
+end
+end
+Note over ctrlXref:Optional if you already started with your Current profile that works OK 
+loop Merge your Own Custom Rebinding(s)
+SC Player->>ctrlXref: Open Your custom xml for Merging
+ctrlXref->>ctrlXref: Load the Rebind from LIVE\user\client\0\controls\mappings
+ctrlXref->>ctrlXref: Update Controls Table
+loop Bindings Editing
+SC Player->>ctrlXref: Merge your Custom bindings
+ctrlXref->>ctrlXref: Update Actions Table
+ctrlXref-->>SC Player: Accept / Warn editing
+end
+end
+Note over ctrlXref: [Optional] Delete and cleanup ambigous/misleading bindings 
+loop Bindings Refining/Cleanup
+SC Player->>ctrlXref: Reorganize / Delete Move etc. 
+SC Player->>ctrlXref: Autofill unbound keyboard bindings?
+SC Player->>ctrlXref: Clone Column Defaults?
+SC Player->>ctrlXref: Clear unwanted/unnecessary bindings
+ctrlXref->>ctrlXref: Update Actions Table
+ctrlXref-->>SC Player: Accept / Warn editing
+end
+
+SC Player->>ctrlXref: Save Rebind Copy as..
+ctrlXref-->>SC Player:Prompt for In-Game Profile name
+SC Player->>ctrlXref: Provide In-game name for Save As
+ctrlXref->>ctrlXref: Modify Profile In-Game configurator visual Name
+ctrlXref->>ctrlXref: Save using provided File name
+SC Player->>ctrlXref: Close and Exit
+```
 
 ## License
 

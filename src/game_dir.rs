@@ -105,22 +105,70 @@ pub const CURRENT_REBIND: &str = r"LIVE\user\client\0\Profiles\default\actionmap
 pub const MAPPINGS_DIR: &str = r"LIVE\user\client\0\controls\mappings";
 
 /// The launcher's build manifest of the installed game, relative to the game folder. Its
-/// JSON `Data.Version` is the game build, e.g. `4.10.200.58746`.
+/// JSON `Data.Version` is the game build, e.g. `4.10.200.58746`, and `Data.RequestedP4ChangeNum`
+/// the changelist, e.g. `13165946`. The build's third part is a build counter, not the patch:
+/// `4.10.200` is release `4.10.3`, and the release name is not in any game file.
 pub const BUILD_MANIFEST: &str = r"LIVE\build_manifest.id";
 
-/// The full game build in `dir`'s [`BUILD_MANIFEST`], e.g. `4.10.200.58746`, if it can be read.
-pub fn game_version(dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join(BUILD_MANIFEST)).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    json.get("Data")?.get("Version")?.as_str().map(str::to_string)
+/// The RSI Launcher's log, relative to `%APPDATA%`. Its install lines name the release, e.g.
+/// `Delta update completed (SC LIVE 4.10.3-live.13165946)`.
+pub const LAUNCHER_LOG: &str = r"rsilauncher\logs\log.log";
+
+/// The installed game's version, as far as it can be known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameVersion {
+    /// The game build from [`BUILD_MANIFEST`], e.g. `4.10.200.58746`.
+    pub build: String,
+    /// The changelist from [`BUILD_MANIFEST`], e.g. `13165946`.
+    pub changelist: Option<String>,
+    /// The release the launcher installed for [`Self::changelist`], e.g. `4.10.3`, from the
+    /// [`LAUNCHER_LOG`].
+    pub release: Option<String>,
 }
 
-/// The game version as players write it, `major.minor.patch`: the build's patch counts in
-/// hundreds and the build number is dropped, so `4.10.200.58746` is `4.10.2`.
-pub fn short_version(full: &str) -> Option<String> {
-    let mut parts = full.trim().split('.').map(|part| part.parse::<u32>().ok());
-    let (major, minor, patch) = (parts.next()??, parts.next()??, parts.next()??);
-    Some(format!("{major}.{minor}.{}", patch / 100))
+/// The installed game's version in `dir`'s [`BUILD_MANIFEST`], with the release name from the
+/// [`LAUNCHER_LOG`] when it lists the manifest's changelist.
+pub fn game_version(dir: &Path) -> Option<GameVersion> {
+    let text = std::fs::read_to_string(dir.join(BUILD_MANIFEST)).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let data = json.get("Data")?;
+    let build = data.get("Version")?.as_str()?.to_string();
+    let changelist = data
+        .get("RequestedP4ChangeNum")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|changelist| !changelist.is_empty())
+        .map(str::to_string);
+    let release = changelist.as_deref().and_then(|changelist| {
+        let log = PathBuf::from(std::env::var_os("APPDATA")?).join(LAUNCHER_LOG);
+        let bytes = std::fs::read(log).ok()?;
+        launcher_release(&String::from_utf8_lossy(&bytes), changelist)
+    });
+    Some(GameVersion { build, changelist, release })
+}
+
+/// The release, e.g. `4.10.3`, of the last LIVE install of `changelist` in the launcher's log
+/// text: lines like `Installing Star Citizen LIVE 4.10.3-live.13165946 at ...` or
+/// `(SC LIVE 4.10.3-live.13165946)`. The last one wins, as a changelist can be released again
+/// under a new name.
+pub fn launcher_release(log: &str, changelist: &str) -> Option<String> {
+    const MARKERS: [&str; 2] = ["SC LIVE ", "Star Citizen LIVE "];
+    let mut found = None;
+    for line in log.lines() {
+        for marker in MARKERS {
+            let mut rest = line;
+            while let Some(at) = rest.find(marker) {
+                rest = &rest[at + marker.len()..];
+                let token = rest.split(|c: char| c.is_whitespace() || c == ')').next().unwrap_or("");
+                let Some((release, number)) = token.split_once("-live.") else { continue };
+                let numeric = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit());
+                if number == changelist && release.split('.').all(numeric) {
+                    found = Some(release.to_string());
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Whether `Data.p4k` has been extracted into `dir`, i.e. `dir` has a `Data` folder.
@@ -286,13 +334,17 @@ mod tests {
     }
 
     #[test]
-    fn short_version_rounds_patch_to_hundreds() {
-        assert_eq!(short_version("4.10.200.58746").as_deref(), Some("4.10.2"));
-        assert_eq!(short_version("4.10.0.12345").as_deref(), Some("4.10.0"));
-        assert_eq!(short_version("4.9.150.1").as_deref(), Some("4.9.1"));
-        assert_eq!(short_version("4.10.200").as_deref(), Some("4.10.2"));
-        assert_eq!(short_version("4.10"), None);
-        assert_eq!(short_version("sc-alpha"), None);
+    fn launcher_release_matches_changelist() {
+        let log = r#"{ "t":"2026-06-03 20:06:35.000", "[main][info] ": "[Pipeline] Installing Star Citizen LIVE 4.8.0-live.11875683 at C:\\SC (type: update)"  },
+{ "t":"2026-06-03 20:07:00.000", "[main][info] ": "[PatcherPhase] Delta update completed (SC LIVE 4.8.1-live.11875683) in C:\\SC\\LIVE"  },
+{ "t":"2026-10-14 20:46:41.000", "[main][info] ": "[Pipeline] Installing Star Citizen LIVE 4.10.2-live.12913470 at C:\\SC (type: update)"  },
+{ "t":"2026-11-12 19:43:38.756", "[main][info] ": "[PatcherPhase] Delta update completed (SC LIVE 4.10.3-live.13165946) in C:\\SC\\LIVE"  },"#;
+        assert_eq!(launcher_release(log, "13165946").as_deref(), Some("4.10.3"));
+        assert_eq!(launcher_release(log, "12913470").as_deref(), Some("4.10.2"));
+        assert_eq!(launcher_release(log, "11875683").as_deref(), Some("4.8.1"));
+        assert_eq!(launcher_release(log, "1316594"), None);
+        assert_eq!(launcher_release("SC LIVE garbage-live.13165946", "13165946"), None);
+        assert_eq!(launcher_release("", "13165946"), None);
     }
 
     #[test]
@@ -304,7 +356,16 @@ mod tests {
             r#"{ "Data": { "Branch": "sc-alpha-4.10.0", "Version": "4.10.200.58746" } }"#,
         )
         .unwrap();
-        assert_eq!(game_version(&dir).as_deref(), Some("4.10.200.58746"));
+        let version = game_version(&dir).unwrap();
+        assert_eq!(version.build, "4.10.200.58746");
+        assert_eq!(version.changelist, None);
+        assert_eq!(version.release, None);
+        std::fs::write(
+            dir.join(BUILD_MANIFEST),
+            r#"{ "Data": { "Version": "4.10.200.58746", "RequestedP4ChangeNum": "13165946" } }"#,
+        )
+        .unwrap();
+        assert_eq!(game_version(&dir).unwrap().changelist.as_deref(), Some("13165946"));
         std::fs::write(dir.join(BUILD_MANIFEST), "not json").unwrap();
         assert_eq!(game_version(&dir), None);
         std::fs::remove_dir_all(root).unwrap();
