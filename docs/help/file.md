@@ -211,6 +211,28 @@ When the open rebind file has changes that are not saved, closing it first asks 
 the file, with **Open Without Saving**. If the other file can't be opened, your changes stay.
 After a **Merge Rebind File**, **Save** is replaced by **Save As...**, which asks where to save.
 
+## Changes made by other programs
+
+While a rebind file is open, ctrlXref checks it about once a second, and whenever its window gets
+the focus. It notices when another program changes the file, such as the game's control editor
+rewriting `actionmaps.xml` or another editor. Its own saves don't count.
+
+A message box then asks what to do, and stays open until you click one of its buttons
+(Esc or a click outside it doesn't close it):
+
+- **Reload modified file** opens the file again as it is now, dropping any unsaved changes here.
+- **Ignore changes** keeps what is shown here. Saving then overwrites the other program's changes.
+
+With unsaved changes in ctrlXref, it also offers:
+
+- **Merge Changes** adds the other program's bindings to yours. Conflicting ones are shown in red,
+  and Ctrl+Z takes them out. Bindings the other program removed stay in yours. **Save** stays
+  available, since the file's own bindings are all kept.
+- **Save Working Copy** saves your changes to a new `<name>_working.xml` and goes on with that file.
+  The changed file is left as it is, for you to merge later with **Merge Rebind File...**. A copy of
+  the game's `actionmaps.xml` goes to the game's `controls\mappings` folder.
+- If the file is removed or renamed, a warning says so; **Save** writes it again.
+
 ## Theme
 
 - **Light** and **Dark** use that theme. Dark takes its colors and heading font from the
