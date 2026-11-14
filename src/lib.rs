@@ -6,5 +6,6 @@ pub mod json;
 pub mod keys;
 pub mod localization;
 pub mod rebinds;
+pub mod repair_log;
 pub mod search;
 pub mod xml_doc;

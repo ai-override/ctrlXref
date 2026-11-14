@@ -22,7 +22,7 @@ use ctrlxref::rebinds::{
 };
 use ctrlxref::search::{self, Place};
 use ctrlxref::xml_doc;
-use ctrlxref::{extract, game_dir, keys};
+use ctrlxref::{extract, game_dir, keys, repair_log};
 use eframe::egui::text::CCursor;
 use eframe::egui::text_selection::CCursorRange;
 use eframe::egui::{
@@ -244,6 +244,9 @@ struct UndoStep {
     modified: bool,
     /// Whether the change was the first merge into the file, so undoing it ends the merged state.
     first_merge: bool,
+    /// Whether the change was made in the Unmatched Rebinds box, so undoing it is logged in the
+    /// repair log.
+    unmatched: bool,
 }
 
 /// The changes to the open rebind file that Ctrl+Z can undo, latest last.
@@ -253,7 +256,7 @@ struct UndoStack(Vec<UndoStep>);
 impl UndoStack {
     /// Remembers the state before a change, forgetting the oldest beyond [`MAX_UNDO`].
     fn push(&mut self, label: String, root: Element, modified: bool) {
-        self.0.push(UndoStep { label, root, modified, first_merge: false });
+        self.0.push(UndoStep { label, root, modified, first_merge: false, unmatched: false });
         if self.0.len() > MAX_UNDO {
             self.0.remove(0);
         }
@@ -442,6 +445,12 @@ pub struct CtrlXrefApp {
     pending_copy_label: Option<String>,
     /// The Unmatched Rebinds box, while it is open.
     unmatched: Option<Vec<UnmatchedRow>>,
+    /// The repair log (`.err`) of the open rebind file, once the Unmatched Rebinds box has
+    /// written to it; later changes in the box, their undoing and saves of the file are added.
+    repair_log: Option<PathBuf>,
+    /// Set while the Unmatched Rebinds box is open with a repair log, so that closing it is
+    /// logged and offers to show the log.
+    repair_log_open: bool,
 }
 
 impl CtrlXrefApp {
@@ -502,6 +511,8 @@ impl CtrlXrefApp {
             instance_prompt: None,
             pending_copy_label: None,
             unmatched: None,
+            repair_log: None,
+            repair_log_open: false,
         }
     }
 
@@ -638,6 +649,7 @@ impl CtrlXrefApp {
         let tree = actionmap_tree(&root, &maps, &strings);
         self.rebinds_modified = false;
         self.undo = UndoStack::default();
+        self.end_repair_log();
         self.document = Some(Document {
             element_count: count_elements(&root),
             tree,
@@ -709,6 +721,7 @@ impl CtrlXrefApp {
         doc.merged = false;
         self.rebinds_modified = false;
         self.undo = UndoStack::default();
+        self.end_repair_log();
         self.refresh_table();
         self.update_title();
 
@@ -810,8 +823,86 @@ impl CtrlXrefApp {
             self.toasts.retain(|toast| !toast.review);
             self.notify(Level::Info, format!("All rebinds match the actions of the {MASTER_PROFILE}"));
         } else {
+            if self.unmatched.is_none() {
+                self.start_repair_log(&rows);
+            }
             self.unmatched = Some(rows);
         }
+    }
+
+    /// Starts a section of the open rebind file's repair log (`.err` next to it) with the
+    /// actions the Unmatched Rebinds box lists, their bindings and the suggested actions.
+    fn start_repair_log(&mut self, rows: &[UnmatchedRow]) {
+        let Some(doc) = &self.document else {
+            return;
+        };
+        let Some(rebind) = doc.rebind_path.clone() else {
+            return;
+        };
+        let text = repair_log_opening(&rebind, &doc.path, rows, SystemTime::now());
+        self.repair_log = Some(repair_log::path_for(&rebind));
+        self.repair_log_open = true;
+        self.write_repair_log(&text);
+    }
+
+    /// Adds `text` to the repair log, if there is one; when that fails, says so once and stops
+    /// logging.
+    fn write_repair_log(&mut self, text: &str) {
+        let Some(path) = &self.repair_log else {
+            return;
+        };
+        if let Err(err) = repair_log::append(path, text) {
+            let note = format!("Cannot write the repair log {}: {err}", path.display());
+            self.repair_log = None;
+            self.repair_log_open = false;
+            self.notify(Level::Warning, note);
+        }
+    }
+
+    /// Adds a line stamped with the time to the repair log, if there is one.
+    fn log_repair(&mut self, text: &str) {
+        if self.repair_log.is_some() {
+            self.write_repair_log(&repair_log::line(SystemTime::now(), text));
+        }
+    }
+
+    /// Once the Unmatched Rebinds box has closed, logs what is left and offers to show the
+    /// repair log in File Explorer.
+    fn finish_repair_log(&mut self) {
+        if !self.repair_log_open || self.unmatched.is_some() {
+            return;
+        }
+        self.repair_log_open = false;
+        let left = self.document.as_ref().map_or(0, |doc| unmatched_actions(&doc.rebinds, &profile_actions(doc)).len());
+        let mut text = if left == 0 {
+            "Closed the box: every rebound action is now in the profile".to_string()
+        } else {
+            format!("Closed the box: {left} rebound actions are still not in the profile")
+        };
+        if self.rebinds_modified {
+            text += ". The changes are not saved yet";
+        }
+        self.log_repair(&text);
+        let Some(path) = self.repair_log.clone() else {
+            return;
+        };
+        let message = format!(
+            "The actions and bindings the Unmatched Rebinds box listed, and each change made to them, \
+             were logged in\n{}",
+            path.display()
+        );
+        let mut dialog = Dialog::saved(message, &path);
+        dialog.title = "Repair Log".into();
+        self.dialogs.push(dialog);
+    }
+
+    /// Ends the repair log of the rebind file being closed or opened again.
+    fn end_repair_log(&mut self) {
+        if self.repair_log_open {
+            self.log_repair("Stopped: the rebind file was closed or opened again");
+        }
+        self.repair_log = None;
+        self.repair_log_open = false;
     }
 
     /// Whether a rebind file is open; warns when not.
@@ -841,11 +932,27 @@ impl CtrlXrefApp {
             return;
         };
         let actions = profile_actions(doc);
+        // The bindings of each action changed, for the repair log.
+        let bindings = |key: &(String, String)| doc.rebinds.get(key).map(|inputs| inputs.join(BINDING_SEPARATOR)).unwrap_or_default();
+        let named = |(map, action): &(String, String)| format!("{map}/{action}");
+        let details: Vec<String> = match &change {
+            UnmatchedChange::Move(..) | UnmatchedChange::Remove(_) => Vec::new(),
+            UnmatchedChange::ApplyAll => {
+                suggested.iter().map(|(from, to)| format!("    {} -> {}: {}", named(from), named(to), bindings(from))).collect()
+            }
+            UnmatchedChange::RemoveAll => unmatched_actions(&doc.rebinds, &actions)
+                .iter()
+                .map(|key| format!("    {}: {}", named(key), bindings(key)))
+                .collect(),
+        };
+        let changed = match &change {
+            UnmatchedChange::Move(key, _) | UnmatchedChange::Remove(key) => bindings(key),
+            _ => String::new(),
+        };
         let Some(root) = &mut doc.rebind_root else {
             return;
         };
         let before = root.clone();
-        let named = |(map, action): &(String, String)| format!("{map}/{action}");
         let (label, message) = match change {
             UnmatchedChange::Move(from, to) => {
                 let moved = move_action_rebinds(root, &from, &to);
@@ -875,7 +982,18 @@ impl CtrlXrefApp {
         }
         doc.rebinds = read_rebinds(root);
         self.undo.push(label, before, self.rebinds_modified);
+        if let Some(step) = self.undo.0.last_mut() {
+            step.unmatched = true;
+        }
         self.rebinds_modified = true;
+        let mut logged = message.clone();
+        if !changed.is_empty() {
+            logged = format!("{logged}: {changed}");
+        }
+        for detail in details {
+            logged = format!("{logged}\n{detail}");
+        }
+        self.log_repair(&logged);
         self.refresh_table();
         self.notify(Level::Success, format!("{message}. Ctrl+Z undoes it. Save the rebind file to keep this"));
     }
@@ -1450,6 +1568,9 @@ impl CtrlXrefApp {
         doc.rebind_root = Some(step.root);
         doc.merged &= !step.first_merge;
         self.rebinds_modified = step.modified;
+        if step.unmatched {
+            self.log_repair(&format!("Undid {} (Ctrl+Z)", step.label));
+        }
         self.refresh_table();
         self.notify(Level::Info, format!("Undid {}", step.label));
     }
@@ -1605,6 +1726,7 @@ impl CtrlXrefApp {
     /// Notes that the file at `path` was written here, so that when it is the open rebind file,
     /// the write is not taken for a change by another program.
     fn note_written(&mut self, path: &Path) {
+        self.log_repair(&format!("Saved the rebind file to {}", path.display()));
         if let Some(doc) = &mut self.document
             && doc.rebind_path.as_deref() == Some(path)
         {
@@ -1983,6 +2105,7 @@ impl CtrlXrefApp {
     fn close_file(&mut self) {
         self.rebinds_modified = false;
         self.undo = UndoStack::default();
+        self.end_repair_log();
         self.document = None;
         self.selected = None;
         self.refresh_table();
@@ -2834,10 +2957,7 @@ impl CtrlXrefApp {
                     });
                     ui.horizontal_wrapped(|ui| {
                         for (suggestion, conflicts) in &row.suggestions {
-                            let why = match suggestion.reason {
-                                MatchReason::SameName => "same name".to_string(),
-                                MatchReason::Similar(percent) => format!("~{percent}%"),
-                            };
+                            let why = match_reason(suggestion.reason);
                             let (map, action) = &suggestion.target;
                             let warn = if *conflicts { "⚠ " } else { "" };
                             let hover = if *conflicts {
@@ -2953,6 +3073,7 @@ impl eframe::App for CtrlXrefApp {
         self.wildcard_prompt(&ctx);
         self.instance_prompt(&ctx);
         self.unmatched_prompt(&ctx);
+        self.finish_repair_log();
         self.toasts(&ctx);
         self.help_windows(&ctx);
         self.control_names_window(&ctx);
@@ -2996,6 +3117,47 @@ fn unmatched_rows(doc: &Document) -> Vec<UnmatchedRow> {
             UnmatchedRow { key, inputs, suggestions }
         })
         .collect()
+}
+
+/// Why an action is suggested, as the Unmatched Rebinds box and its repair log show it.
+fn match_reason(reason: MatchReason) -> String {
+    match reason {
+        MatchReason::SameName => "same name".to_string(),
+        MatchReason::Similar(percent) => format!("~{percent}%"),
+    }
+}
+
+/// The section the Unmatched Rebinds box starts in the repair log as it opens at `time`: the
+/// rebind file and profile, then each action the profile lacks with its bindings and the
+/// actions suggested for them.
+fn repair_log_opening(rebind: &Path, profile: &Path, rows: &[UnmatchedRow], time: SystemTime) -> String {
+    let mut text = format!(
+        "\n==== {} Unmatched Rebinds ====\n\
+         Rebind file: {}\n\
+         Profile:     {}\n\
+         {} rebound actions are not in the {MASTER_PROFILE} (defaultProfile.xml from Data.p4k), so the \
+         game ignores their bindings:\n",
+        repair_log::timestamp(time),
+        rebind.display(),
+        profile.display(),
+        rows.len()
+    );
+    for row in rows {
+        text += &format!("  {}/{}\n", row.key.0, row.key.1);
+        text += &format!("      bindings:    {}\n", row.inputs.join(BINDING_SEPARATOR));
+        let suggestions: Vec<String> = row
+            .suggestions
+            .iter()
+            .map(|(suggestion, conflicts)| {
+                let (map, action) = &suggestion.target;
+                let conflict = if *conflicts { ", already bound on the same device" } else { "" };
+                format!("{map}/{action} ({}{conflict})", match_reason(suggestion.reason))
+            })
+            .collect();
+        let suggestions = if suggestions.is_empty() { "(no similar action)".to_string() } else { suggestions.join(", ") };
+        text += &format!("      suggestions: {suggestions}\n");
+    }
+    text
 }
 
 /// Where a window with content of `size` goes, centered on the main window, given the main
@@ -3920,6 +4082,62 @@ mod tests {
         app.undo_change();
         assert_eq!(rebinds_of(&app), ["a: kb1_x", "b: kb1_b", "gone: kb1_g"]);
         assert!(!app.rebinds_modified);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unmatched_rebinds_box_keeps_a_repair_log() {
+        let (mut app, dir, rebind) = app_with_rebinds("unmatched-log");
+        open_unmatched(&mut app, &rebind);
+        let log = dir.join("rebinds.err");
+        assert!(!log.exists());
+
+        // Opening the box lists the actions, their bindings and the suggestions.
+        app.show_unmatched();
+        let opened = std::fs::read_to_string(&log).unwrap();
+        assert!(opened.contains("Unmatched Rebinds ===="), "{opened}");
+        assert!(opened.contains(&format!("Rebind file: {}", rebind.display())), "{opened}");
+        assert!(opened.contains("2 rebound actions"), "{opened}");
+        assert!(opened.contains("  m/gone\n      bindings:    kb1_g\n      suggestions: (no similar action)\n"), "{opened}");
+        assert!(opened.contains("  old/b\n      bindings:    kb1_b\n      suggestions: m/b (same name)"), "{opened}");
+        // Showing it again while open starts no new section.
+        app.show_unmatched();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), opened);
+
+        // Each change, its undoing and the closing are added in order.
+        app.apply_unmatched(super::UnmatchedChange::Move(("old".into(), "b".into()), ("m".into(), "b".into())));
+        app.undo_change();
+        app.apply_unmatched(super::UnmatchedChange::ApplyAll);
+        app.apply_unmatched(super::UnmatchedChange::Remove(("m".into(), "gone".into())));
+        assert!(app.unmatched.is_none());
+        app.finish_repair_log();
+        let text = std::fs::read_to_string(&log).unwrap();
+        let added: Vec<&str> = text[opened.len()..]
+            .lines()
+            .map(|line| line.split_once("UTC] ").map_or(line, |(_, rest)| rest))
+            .collect();
+        assert_eq!(
+            added,
+            [
+                "Moved 1 rebinds of old/b to m/b: kb1_b",
+                "Undid moving the rebinds of b (Ctrl+Z)",
+                "Moved 1 rebinds of 1 actions to the suggested ones",
+                "    old/b -> m/b: kb1_b",
+                "Removed 1 rebinds of m/gone: kb1_g",
+                "Closed the box: every rebound action is now in the profile. The changes are not saved yet",
+            ]
+        );
+        // Closing offers to show the log.
+        let dialog = app.dialogs.last().expect("the log is offered");
+        assert!(matches!(&dialog.confirm, Some((_, _, super::DialogAction::ShowInExplorer(path))) if *path == log));
+
+        // A save of the rebind file is logged; a second opening of the box appends a new section.
+        app.dialogs.clear();
+        app.write_rebind_file(&rebind);
+        assert!(std::fs::read_to_string(&log).unwrap().ends_with(&format!("Saved the rebind file to {}\n", rebind.display())));
+        open_unmatched(&mut app, &rebind);
+        app.show_unmatched();
+        assert_eq!(std::fs::read_to_string(&log).unwrap().matches("Unmatched Rebinds ====").count(), 2);
         std::fs::remove_dir_all(dir).ok();
     }
 

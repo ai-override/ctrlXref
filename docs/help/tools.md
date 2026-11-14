@@ -78,6 +78,19 @@ are left.
 
 > The changes are only in memory until you save the rebind file.
 
+### Repair log
+
+So that you can later see what was repaired, the box keeps a log next to the rebind file, with
+the same name but the extension `.err` in place of `.xml` (for example
+`GameGlass Keyboard 4.0.new.err`). A file without `.xml` has `.err` added. Each time the box opens it adds a
+section stamped with the date and time (UTC) that lists the rebind file, the profile, and each
+unmatched action with its bindings and suggestions. Then it adds a stamped line for each change:
+the bindings moved and where to, the bindings removed, and changes undone with **Ctrl+Z**. When
+the box closes, a last line tells how many unmatched actions are left and whether the changes are
+still unsaved, and a box offers **Open in Explorer** with the log selected. Later saves of the
+rebind file are logged too, until it is closed or opened again. The log is only added to, so
+earlier repairs stay in it.
+
 ## Show Control Names
 
 Opens a window that lists the game's names for its controls, centered on the main window. It
