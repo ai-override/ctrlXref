@@ -1053,6 +1053,24 @@ pub fn set_header_label(root: &mut Element, label: &str) {
     root.children.insert(0, XMLNode::Element(header));
 }
 
+/// The `profileName` of the root `ActionMaps` element, which exported layouts carry next to
+/// the header label. A nested `ActionProfiles profileName` (the game's profile format) is not it.
+pub fn profile_name(root: &Element) -> Option<&str> {
+    (root.name == "ActionMaps").then(|| root.attributes.get("profileName")).flatten().map(String::as_str)
+}
+
+/// Names a copy of the rebind file: sets the header label (see [`set_header_label`]) and, when
+/// the root `ActionMaps` has a `profileName`, that too. No `profileName` is added where there is
+/// none, and a nested `ActionProfiles profileName` is left alone.
+pub fn set_copy_name(root: &mut Element, name: &str) {
+    set_header_label(root, name);
+    if root.name == "ActionMaps"
+        && let Some(profile_name) = root.attributes.get_mut("profileName")
+    {
+        *profile_name = name.into();
+    }
+}
+
 /// Why `label` cannot be a header label, or `None` when it can: it must not be blank and must
 /// have at most [`MAX_HEADER_LABEL`] characters, leading and trailing spaces left out.
 pub fn header_label_error(label: &str) -> Option<&'static str> {
@@ -1130,6 +1148,36 @@ mod tests {
         assert_eq!(header_label(&root), Some("Copy"));
         assert_eq!(xml_doc::child_elements(&root).next().unwrap().name, HEADER_TAG);
         assert_eq!(xml_doc::child_elements(&root).count(), 2);
+    }
+
+    #[test]
+    fn copy_name_sets_the_label_and_the_root_profile_name() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps version="1" optionsVersion="2" rebindVersion="2" profileName="GameGlass Keyboard 4.0.new"><CustomisationUIHeader label="GameGlass Keyboard 4.0.new" description="d"/><actionmap name="m"/></ActionMaps>"#,
+        )
+        .unwrap();
+        assert_eq!(profile_name(&root), Some("GameGlass Keyboard 4.0.new"));
+        set_copy_name(&mut root, "My Keyboard");
+        assert_eq!(header_label(&root), Some("My Keyboard"));
+        assert_eq!(profile_name(&root), Some("My Keyboard"));
+        assert_eq!(root.attributes["version"], "1");
+        assert_eq!(root.attributes["optionsVersion"], "2");
+        assert_eq!(root.attributes["rebindVersion"], "2");
+        assert_eq!(xml_doc::child_elements(&root).next().unwrap().attributes["description"], "d");
+    }
+
+    #[test]
+    fn copy_name_leaves_action_profiles_alone_and_adds_no_profile_name() {
+        let mut root = xml_doc::from_str(
+            r#"<ActionMaps><ActionProfiles profileName="default"><actionmap name="m"/></ActionProfiles></ActionMaps>"#,
+        )
+        .unwrap();
+        assert_eq!(profile_name(&root), None);
+        set_copy_name(&mut root, "Copy");
+        assert_eq!(header_label(&root), Some("Copy"));
+        assert!(!root.attributes.contains_key("profileName"));
+        let profiles = xml_doc::child_elements(&root).find(|child| child.name == "ActionProfiles").unwrap();
+        assert_eq!(profiles.attributes["profileName"], "default");
     }
 
     #[test]

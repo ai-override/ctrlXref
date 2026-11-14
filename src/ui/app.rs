@@ -16,8 +16,8 @@ use ctrlxref::rebinds::{
     clear_empty_device_rebinds, clone_default_rebinds, device_prefix, empty_rebind_label, matching_rebinds,
     remove_matching_rebinds, change_device_instance, device_instances,
     complete_blank_layout, count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind,
-    merge_rebinds, move_action_rebinds, parse_cell_inputs, profile_input, read_rebinds, rebind_device, remove_action,
-    remove_unmatched, set_device_rebinds, set_header_label, set_keyboard_rebind, suggest_targets,
+    merge_rebinds, move_action_rebinds, parse_cell_inputs, profile_input, profile_name, read_rebinds, rebind_device,
+    remove_action, remove_unmatched, set_copy_name, set_device_rebinds, set_keyboard_rebind, suggest_targets,
     unbound_keyboard_actions, unmatched_actions,
 };
 use ctrlxref::search::{self, Place};
@@ -375,7 +375,8 @@ struct InstancePrompt {
     to: Option<u32>,
 }
 
-/// The box Save Rebind Copy As shows first, asking for the copy's header label.
+/// The box Save Rebind Copy As shows first, asking for the copy's visual name: its header
+/// label and root `profileName`.
 struct LabelPrompt {
     text: String,
     /// Set until the field has taken the focus with all its text selected.
@@ -431,7 +432,7 @@ pub struct CtrlXrefApp {
     save_as_after: Option<AfterPrompt>,
     /// The Tools > Show Control Names window, while it is open.
     control_names: Option<ControlNamesWindow>,
-    /// The Save Rebind Copy As label box, while it is open.
+    /// The Save Rebind Copy As visual name box, while it is open.
     label_prompt: Option<LabelPrompt>,
     /// The Remove by * wildcards box, while it is open.
     wildcard_prompt: Option<WildcardPrompt>,
@@ -1784,29 +1785,31 @@ impl CtrlXrefApp {
     }
 
     /// Starts writing the rebind file to a new path, as a backup or a copy to edit later, by
-    /// asking for the copy's header label, which names it in the game's list of control
+    /// asking for the copy's visual name, which names it in the game's list of control
     /// profiles; [`Self::save_rebind_copy_with_label`] goes on. The open rebind file stays the
     /// one Save Rebind File writes.
     fn save_rebind_copy_as(&mut self) {
         let Some(path) = self.rebind_path() else {
             return;
         };
-        // Files in the game's profile format have no label; their file name stands in.
-        let label = self
-            .document
-            .as_ref()
-            .and_then(|doc| doc.rebind_root.as_ref())
-            .and_then(header_label)
-            .map(str::to_string)
+        // Files in the game's profile format have no label or profileName; their file name
+        // stands in.
+        let root = self.document.as_ref().and_then(|doc| doc.rebind_root.as_ref());
+        let label = root
+            .and_then(|root| header_label(root).or_else(|| profile_name(root)))
+            .map(|label| label.trim().chars().take(MAX_HEADER_LABEL).collect())
             .unwrap_or_else(|| {
                 let stem = path.file_stem().map(|stem| stem.to_string_lossy()).unwrap_or_default();
                 stem.trim().chars().take(MAX_HEADER_LABEL).collect()
             });
         self.label_prompt = Some(LabelPrompt { text: label, focus: true });
+        // Commands run at the end of the frame, after the box would have been drawn: draw it
+        // now, not on the next mouse move or key press.
+        self.ctx.request_repaint();
     }
 
-    /// Asks where to save the copy and writes it there with `label` in its header; the open
-    /// rebind file is not changed.
+    /// Asks where to save the copy and writes it there with `label` as its header label and
+    /// root `profileName`; the open rebind file is not changed.
     fn save_rebind_copy_with_label(&mut self, label: &str, frame: &eframe::Frame) {
         let Some(path) = self.pick_copy_path("Save Rebind Copy As", frame) else {
             return;
@@ -1814,7 +1817,7 @@ impl CtrlXrefApp {
         let Some(mut root) = self.document.as_ref().and_then(|doc| doc.rebind_root.clone()) else {
             return;
         };
-        set_header_label(&mut root, label);
+        set_copy_name(&mut root, label);
         match xml_doc::save(&root, &path) {
             Ok(()) => {
                 self.note_written(&path);
@@ -2581,7 +2584,7 @@ impl CtrlXrefApp {
         }
     }
 
-    /// Shows the Save Rebind Copy As label box: the label starts selected, and a blank one or
+    /// Shows the Save Rebind Copy As visual name box: the old name starts selected, and a blank one or
     /// one longer than [`MAX_HEADER_LABEL`] characters cannot be saved. Enter saves, Escape
     /// cancels.
     fn label_prompt(&mut self, ctx: &Context) {
@@ -2595,11 +2598,15 @@ impl CtrlXrefApp {
         let mut accepted = None;
         let response = egui::Modal::new(Id::unique("copy label")).show(ctx, |ui| {
             ui.set_width(420.);
-            ui.heading("Copy Label");
+            ui.heading("Visual Name");
             ui.add_space(8.);
             ui.label(format!(
-                "The name shown in the game's list of control profiles (1-{MAX_HEADER_LABEL} characters)."
+                "Please provide a visual name for the game-engine control editor to show when loading \
+                 this copy (1-{MAX_HEADER_LABEL} characters)."
             ));
+            ui.label(
+                RichText::new("It is written to the CustomisationUIHeader label and the ActionMaps profileName.").weak(),
+            );
             ui.add_space(8.);
             let error = header_label_error(&prompt.text);
             let mut output = TextEdit::singleline(&mut prompt.text)
@@ -2629,7 +2636,7 @@ impl CtrlXrefApp {
             });
             ui.add_space(12.);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let save = ui.add_enabled(error.is_none(), egui::Button::new("Save Copy..."));
+                let save = ui.add_enabled(error.is_none(), egui::Button::new("Save Copy As..."));
                 if ui.button("Cancel").clicked() {
                     close = true;
                 }

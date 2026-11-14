@@ -163,12 +163,15 @@ File...**, **Tools > Export to .csv...** and **Tools > Export to .json...** offe
 
 ## Save Rebind Copy As... (Ctrl+Shift+S)
 
-Writes the open rebind file to a new file, as a backup or a copy to edit later. First it asks
-for the copy's label, the name the game shows in its list of control profiles, so the copy
-can be told apart from the original there. The label starts as the open file's, all selected
-so typing replaces it; it must be 1-32 characters. Files in the game's profile format,
-such as `actionmaps.xml`, have no label, so the file name is suggested instead. **Enter** or **Save Copy...** goes on, and
-**Escape** or **Cancel** stops without saving. Only the copy gets the new label.
+Writes the open rebind file to a new file, as a backup or a copy to edit later. First the
+**Visual Name** box asks for the name the game-engine control editor shows for the copy in its
+list of control profiles, so the copy can be told apart from the original there. The name is
+written to the copy's `<CustomisationUIHeader label="…">` and, when the file has one, to the
+`profileName` of its root `<ActionMaps>`. It starts as the open file's label, all selected so
+typing replaces it; it must be 1-32 characters. Files in the game's profile format, such as
+`actionmaps.xml`, have no label, so the file name is suggested instead. **Enter** or
+**Save Copy As...** goes on, and **Escape** or **Cancel** stops without saving. Only the copy
+gets the new name.
 
 The name suggested for the file is the original name with `_copy` added. After this,
 **Save Rebind File** still writes the original file, not the copy.
