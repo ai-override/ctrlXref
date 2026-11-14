@@ -22,7 +22,7 @@ ctrlXref does not identify as a [Star Citizen](https://robertsspaceindustries.co
 - See the game-engine default bindings side by side with your rebinds for keyboard, mouse, joystick(s) and gamepad.
 - Edit bindings directly in the table, with possible conflicts shown in red.
 - Merge multiple custom rebind files to create your preferred control setup and to get a confirmation on which controls are truly bound to what action.
-- Conflicting controls manual resolving support (TODO improved edit features sWork In Progress).
+- Conflicting controls manual resolving support (TODO improved edit features Work In Progress).
 - Move or remove bindings of actions that older rebind files name but the game engine's current profile no longer has, with suggested renamed or moved actions.
 - List the game's control name list with examples in a sortable table.
 - Select cells with a mouse drag or `Ctrl+A` and copy them with `Ctrl+C`, as tab-separated text that pastes into Excel and other tables.
@@ -37,6 +37,7 @@ ctrlXref does not identify as a [Star Citizen](https://robertsspaceindustries.co
 - Change joystick numbers from the context menu. Example: from js2_ to js8_ (numbers 1-8 are available in the game engine, at least in theory; probably at most 5 are really supported currently). NOTE! Swapping two numbers is doable by first moving one to a free number temporarily and then moving the other where the first was... you get the idea, I'm sure.
 - The Star Citizen game version and the ctrlXref version are shown in the menu bar, beside the theme selector.
 - Notice when the open rebind file is changed by another program, like the game's control editor. With unsaved changes, merge the other program's changes into yours or save yours as a working copy to merge later.
+- Opening or Merging a rebind file with "orphaned" action names spawn a resolver modal dialog and a .err text file will be automatically saved for later as you decide how to handle each missing/renamed action. Please find the file under your `StarCitizen\LIVE\user\client\0\controls\mappings\` and check the file later if aby of the control bindings are now mapped to faulty actions.
 
 
 ctrlXref writes only to profile rebind xml files. It never changes `Data.p4k` or `defaultProfile.xml`. Saving the current bindings `actionmaps.xml` spawns a Warning as the file will be overwritten by the game engine on configuration modifications.
@@ -322,8 +323,9 @@ For all of us lazy gamers, here's the pre-built exe. No install required or even
 - Column sorting ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
 - Conflict / multibinding resolving ![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
 - Column Autofill (will be refactored into the column context menu soon) ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
-- Unmatched rebinds warning after opening an older rebind file (a GameGlass layout made for Star Citizen 4.0) ![Unmatched Rebinds Warning](assets/images/orphaned_resolve1.png)
-- Unmatched rebinds resolving with suggested actions of the game engine's current profile ![Unmatched Rebinds Resolving](assets/images/orphaned_resolve2.png)
+- Unmatched / Orphaned rebinds warning after opening an older rebind file (a GameGlass layout made for Star Citizen 4.0) ![Unmatched Rebinds Warning](assets/images/orphaned_resolve1.png)
+- Unmatched / Orphaned rebinds resolving with suggested actions of the game engine's current profile ![Unmatched Rebinds Resolving](assets/images/orphaned_resolve2.png)
+- Unmatched / Orphaned rebinds resolver automatically saved (.err) log file ![Unmatched Rebinds Resolving Log File](assets/images/orphaned_resolve_err_file.png)
 - Deleting with `*` wildcard(s) ![Delete using wildcard * character](assets/images/wildcard_delete.png)
 - Cloning default bindings to a rebind column ![Clone Default bindings to column](assets/images/clone_to_jsx.png)
 - Changing Joystick numbers ![Change Joystick jsx_ to jsy_](assets/images/change_jsx_.png)
