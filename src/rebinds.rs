@@ -1071,6 +1071,128 @@ pub fn set_copy_name(root: &mut Element, name: &str) {
     }
 }
 
+/// The device settings a rebind file exported from the game has next to its actionmaps, as
+/// (tag, attribute, value): the keyboard, gamepad and joystick `<options>` and the mouse
+/// `<deviceoptions>`.
+pub const REQUIRED_DEVICE_OPTIONS: [(&str, &str, &str); 4] = [
+    ("options", "type", "keyboard"),
+    ("options", "type", "gamepad"),
+    ("options", "type", "joystick"),
+    ("deviceoptions", "name", "Mouse"),
+];
+
+/// The tags of the device settings that [`copy_devices`] copies.
+const DEVICE_OPTION_TAGS: [&str; 2] = ["options", "deviceoptions"];
+
+/// The `<devices>` list inside the [`HEADER_TAG`].
+const HEADER_DEVICES_TAG: &str = "devices";
+
+/// Where a rebind file's actionmaps and device settings are, as [`actionmap_parent_mut`] finds it.
+fn actionmap_parent(root: &Element) -> &Element {
+    fn holds_actionmap(element: &Element) -> bool {
+        xml_doc::child_elements(element).any(|child| child.name == ACTIONMAP_TAG)
+            || xml_doc::child_elements(element).any(holds_actionmap)
+    }
+    fn find(element: &Element) -> &Element {
+        if xml_doc::child_elements(element).any(|child| child.name == ACTIONMAP_TAG) {
+            return element;
+        }
+        match xml_doc::child_elements(element).find(|child| holds_actionmap(child)) {
+            Some(child) => find(child),
+            None => element,
+        }
+    }
+    if holds_actionmap(root) {
+        return find(root);
+    }
+    xml_doc::child_elements(root).find(|child| child.name == "ActionProfiles").unwrap_or(root)
+}
+
+/// The required device settings ([`REQUIRED_DEVICE_OPTIONS`]) the rebind file lacks, written
+/// like `<options type="gamepad">`. A file the game exported lacks none.
+pub fn missing_device_options(root: &Element) -> Vec<String> {
+    let parent = actionmap_parent(root);
+    REQUIRED_DEVICE_OPTIONS
+        .iter()
+        .filter(|(tag, attr, value)| {
+            !xml_doc::child_elements(parent).any(|child| {
+                child.name == *tag && child.attributes.get(*attr).is_some_and(|v| v.eq_ignore_ascii_case(value))
+            })
+        })
+        .map(|(tag, attr, value)| format!("<{tag} {attr}=\"{value}\">"))
+        .collect()
+}
+
+/// The `<options>` and `<deviceoptions>` elements next to the rebind file's actionmaps.
+pub fn device_option_elements(root: &Element) -> Vec<&Element> {
+    xml_doc::child_elements(actionmap_parent(root))
+        .filter(|child| DEVICE_OPTION_TAGS.contains(&child.name.as_str()))
+        .collect()
+}
+
+/// One line per `<options>` and `<deviceoptions>` element of the rebind file, with the
+/// element's attributes only, like
+/// `<options type="keyboard" instance="1" Product="Keyboard  {6F1D2B61-...}"/>`: enough to tell
+/// which devices they are, without the settings inside.
+pub fn device_option_lines(root: &Element) -> Vec<String> {
+    device_option_elements(root)
+        .into_iter()
+        .map(|element| {
+            let attributes: String = element
+                .attributes
+                .iter()
+                .map(|(name, value)| {
+                    let value = value.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
+                    format!(" {name}=\"{value}\"")
+                })
+                .collect();
+            format!("<{}{attributes}/>", element.name)
+        })
+        .collect()
+}
+
+/// Replaces the device settings of the rebind file `target` with those of `source`: its
+/// `<options>` and `<deviceoptions>` elements, and the `<devices>` list in its header. The
+/// header's label and description, the modifiers and the actionmaps stay as they are.
+pub fn copy_devices(target: &mut Element, source: &Element) {
+    let options: Vec<XMLNode> =
+        device_option_elements(source).into_iter().map(|element| XMLNode::Element(element.clone())).collect();
+    let devices = find_header(source)
+        .and_then(|header| xml_doc::child_elements(header).find(|child| child.name == HEADER_DEVICES_TAG))
+        .cloned();
+
+    let parent = actionmap_parent_mut(target);
+    let is_device_option =
+        |node: &XMLNode| node.as_element().is_some_and(|child| DEVICE_OPTION_TAGS.contains(&child.name.as_str()));
+    let at = match parent.children.iter().position(is_device_option) {
+        Some(ix) => ix,
+        None => parent
+            .children
+            .iter()
+            .position(|node| node.as_element().is_some_and(|child| child.name == ACTIONMAP_TAG))
+            .unwrap_or(parent.children.len()),
+    };
+    parent.children.retain(|node| !is_device_option(node));
+    let at = at.min(parent.children.len());
+    parent.children.splice(at..at, options);
+
+    let Some(devices) = devices else {
+        return;
+    };
+    if find_header_mut(target).is_none() {
+        target.children.insert(0, XMLNode::Element(Element::new(HEADER_TAG)));
+    }
+    let header = find_header_mut(target).expect("a header");
+    let old = header
+        .children
+        .iter()
+        .position(|node| node.as_element().is_some_and(|child| child.name == HEADER_DEVICES_TAG));
+    match old {
+        Some(ix) => header.children[ix] = XMLNode::Element(devices),
+        None => header.children.push(XMLNode::Element(devices)),
+    }
+}
+
 /// Why `label` cannot be a header label, or `None` when it can: it must not be blank and must
 /// have at most [`MAX_HEADER_LABEL`] characters, leading and trailing spaces left out.
 pub fn header_label_error(label: &str) -> Option<&'static str> {
@@ -1102,6 +1224,71 @@ mod tests {
         let header = xml_doc::child_elements(&root).next().unwrap();
         assert_eq!(header.attributes["description"], "d");
         assert_eq!(xml_doc::child_elements(header).next().unwrap().name, "devices");
+    }
+
+    #[test]
+    fn missing_device_options_are_found_next_to_the_actionmaps() {
+        let complete = xml_doc::from_str(
+            r#"<ActionMaps><options type="keyboard"/><options type="Gamepad"/><options type="joystick"/><deviceoptions name="Mouse"/><actionmap name="m"/></ActionMaps>"#,
+        )
+        .unwrap();
+        assert!(missing_device_options(&complete).is_empty());
+        let partial =
+            xml_doc::from_str(r#"<ActionMaps><options type="keyboard"/><actionmap name="m"/></ActionMaps>"#).unwrap();
+        assert_eq!(
+            missing_device_options(&partial),
+            [r#"<options type="gamepad">"#, r#"<options type="joystick">"#, r#"<deviceoptions name="Mouse">"#]
+        );
+        let profile = xml_doc::from_str(
+            r#"<ActionMaps><ActionProfiles><options type="keyboard"/><options type="gamepad"/><options type="joystick"/><deviceoptions name="mouse"/><actionmap name="m"/></ActionProfiles></ActionMaps>"#,
+        )
+        .unwrap();
+        assert!(missing_device_options(&profile).is_empty());
+    }
+
+    #[test]
+    fn device_option_lines_show_each_device_by_its_attributes() {
+        let root = xml_doc::from_str(
+            r#"<ActionMaps><options type="keyboard" instance="1" Product="Keyboard  {6F1D2B61-D5A0-11CF-BFC7-444553540000}"/><options type="joystick" instance="1" Product="A &amp; B"><flight_move_pitch invert="1"/></options><modifiers/><deviceoptions name="Mouse"><option input="x" deadzone="0"/></deviceoptions><actionmap name="m"/></ActionMaps>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            device_option_lines(&root),
+            [
+                r#"<options type="keyboard" instance="1" Product="Keyboard  {6F1D2B61-D5A0-11CF-BFC7-444553540000}"/>"#,
+                r#"<options type="joystick" instance="1" Product="A &amp; B"/>"#,
+                r#"<deviceoptions name="Mouse"/>"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn copy_devices_replaces_the_device_settings_only() {
+        let source = xml_doc::from_str(
+            r#"<ActionMaps><CustomisationUIHeader label="src"><devices><keyboard instance="1"/><joystick instance="1"/></devices></CustomisationUIHeader><options type="keyboard" instance="1"/><options type="joystick" instance="1"/><deviceoptions name="Mouse"/><actionmap name="x"/></ActionMaps>"#,
+        )
+        .unwrap();
+        let mut target = xml_doc::from_str(
+            r#"<ActionMaps><CustomisationUIHeader label="mine" description="d"><devices><keyboard instance="1"/></devices></CustomisationUIHeader><modifiers/><options type="keyboard" old="1"/><actionmap name="m"/></ActionMaps>"#,
+        )
+        .unwrap();
+        copy_devices(&mut target, &source);
+        let children: Vec<_> = xml_doc::child_elements(&target).map(|child| child.name.as_str()).collect();
+        assert_eq!(children, [HEADER_TAG, "modifiers", "options", "options", "deviceoptions", "actionmap"]);
+        let xml = xml_doc::to_string(&target).unwrap();
+        assert!(!xml.contains("old=") && !xml.contains("\"x\""), "{xml}");
+        assert_eq!(header_label(&target), Some("mine"));
+        let header = xml_doc::child_elements(&target).next().unwrap();
+        assert_eq!(header.attributes["description"], "d");
+        let devices = xml_doc::child_elements(header).next().unwrap();
+        assert_eq!(xml_doc::child_elements(devices).count(), 2);
+
+        // Without device settings or a header, they go before the actionmaps and a header is added.
+        let mut bare = xml_doc::from_str(r#"<ActionMaps><actionmap name="m"/></ActionMaps>"#).unwrap();
+        copy_devices(&mut bare, &source);
+        let children: Vec<_> = xml_doc::child_elements(&bare).map(|child| child.name.as_str()).collect();
+        assert_eq!(children, [HEADER_TAG, "options", "options", "deviceoptions", "actionmap"]);
+        assert_eq!(header_label(&bare), None);
     }
 
     #[test]

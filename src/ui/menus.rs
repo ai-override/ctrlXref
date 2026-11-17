@@ -14,6 +14,7 @@ pub enum Command {
     SaveRebindFile,
     SaveRebindCopyAs,
     CreateBlankRebindFile,
+    ShowCurrentDevices,
     CloseFile,
     Quit,
     Theme(ThemeChoice),
@@ -91,6 +92,7 @@ pub fn menu_items(ui: &mut Ui, theme: ThemeChoice, can_extract: bool, can_merge:
         ui.add_enabled_ui(can_save, |ui| item(ui, "Save Rebind File", Command::SaveRebindFile));
         item(ui, "Save Rebind Copy As...", Command::SaveRebindCopyAs);
         item(ui, "Create Blank Rebind File...", Command::CreateBlankRebindFile);
+        item(ui, "Show Current Devices", Command::ShowCurrentDevices);
         item(ui, "Close", Command::CloseFile);
         ui.separator();
         ui.menu_button("Theme", |ui| {

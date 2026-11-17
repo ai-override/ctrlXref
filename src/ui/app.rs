@@ -18,7 +18,7 @@ use ctrlxref::rebinds::{
     complete_blank_layout, count_empty_keyboard, find_actionmaps, header_label, header_label_error, is_empty_rebind,
     merge_rebinds, move_action_rebinds, parse_cell_inputs, profile_input, profile_name, read_rebinds, rebind_device,
     remove_action, remove_unmatched, set_copy_name, set_device_rebinds, set_keyboard_rebind, suggest_targets,
-    unbound_keyboard_actions, unmatched_actions,
+    unbound_keyboard_actions, unmatched_actions, copy_devices, device_option_lines, missing_device_options,
 };
 use ctrlxref::search::{self, Place};
 use ctrlxref::xml_doc;
@@ -233,6 +233,9 @@ enum DialogAction {
     /// Opens the rebind file again as another program changed it, dropping any changes here,
     /// after [`outside_change_warning`].
     ReloadOutsideChanges,
+    /// Copies the device settings of this merged rebind file into the open one, after
+    /// [`merged_devices_prompt`].
+    UseMergedDevices(Box<Element>),
 }
 
 /// The open rebind file's state before one change to it.
@@ -313,6 +316,8 @@ struct Dialog {
     more: Option<(&'static str, DialogAction)>,
     /// A phrase drawn like the Default column's bindings wherever it occurs in `message`.
     highlight: Option<&'static str>,
+    /// Whether `list` is drawn in a monospace font, as for raw XML.
+    monospace: bool,
     width: f32,
 }
 
@@ -327,6 +332,7 @@ impl Dialog {
             extra: None,
             more: None,
             highlight: None,
+            monospace: false,
             width: 480.,
         }
     }
@@ -343,6 +349,7 @@ impl Dialog {
             extra: None,
             more: None,
             highlight: None,
+            monospace: false,
             width: 480.,
         }
     }
@@ -561,6 +568,7 @@ impl CtrlXrefApp {
             Command::SaveRebindFile => self.save_rebind_file(),
             Command::SaveRebindCopyAs => self.save_rebind_copy_as(),
             Command::CreateBlankRebindFile => self.create_blank_rebind_file(frame),
+            Command::ShowCurrentDevices => self.show_current_devices(),
             Command::CloseFile => self.unless_unsaved(AfterPrompt::CloseFile),
             Command::Quit => self.ctx.send_viewport_cmd(ViewportCommand::Close),
             Command::Theme(choice) => self.set_theme(choice),
@@ -711,7 +719,8 @@ impl CtrlXrefApp {
             return;
         };
         let rebinds = read_rebinds(&root);
-        let unmatched = unmatched_actions(&rebinds, &profile_actions(doc)).len();
+        let devices = opened_devices_dialog(&path, &root);
+        let unmatched =unmatched_actions(&rebinds, &profile_actions(doc)).len();
         let note = format!("{} of {} rebinds matched from {}", rebinds.len() - unmatched, rebinds.len(), path.display());
         doc.rebinds = rebinds;
         doc.rebind_stamp = stamp;
@@ -730,6 +739,7 @@ impl CtrlXrefApp {
         } else {
             self.warn_unmatched(&format!("{note}. "));
         }
+        self.dialogs.push(devices);
     }
 
     /// Whether Save Rebind File may overwrite the file: not once another file was merged into it.
@@ -770,6 +780,9 @@ impl CtrlXrefApp {
                 return;
             }
         };
+        if !outside && self.can_merge() && missing_device_options(&other).is_empty() {
+            self.dialogs.push(merged_devices_prompt(path, &other));
+        }
         let Some(doc) = &mut self.document else {
             return;
         };
@@ -810,6 +823,36 @@ impl CtrlXrefApp {
         if unmatched > 0 {
             self.warn_unmatched("After the merge, ");
         }
+    }
+
+    /// Shows the devices the open rebind file will be saved with, as File > Show Current Devices
+    /// asks: the same list as opening the file shows, with the devices of a merged file once they
+    /// were taken. Warns when no rebind file is open, or when its device settings are incomplete.
+    fn show_current_devices(&mut self) {
+        let open = self.document.as_ref().and_then(|doc| Some((doc.rebind_path.as_deref()?, doc.rebind_root.as_ref()?)));
+        let dialog = match open {
+            Some((path, root)) => opened_devices_dialog(path, root),
+            None => Dialog::warning(
+                "No devices",
+                "No rebind file is open, so there is no device list to show. Open a rebind file \
+                 exported from the game, or merge one into the open rebind file and use its devices."
+                    .to_string(),
+            ),
+        };
+        self.dialogs.push(dialog);
+    }
+
+    /// Replaces the device settings of the open rebind file with those of `source`, a merged
+    /// rebind file (see [`copy_devices`]), as one step Ctrl+Z can undo.
+    fn use_merged_devices(&mut self, source: &Element) {
+        let Some(root) = self.document.as_mut().and_then(|doc| doc.rebind_root.as_mut()) else {
+            return;
+        };
+        let before = root.clone();
+        copy_devices(root, source);
+        self.undo.push("using the merged file's devices".into(), before, self.rebinds_modified);
+        self.rebinds_modified = true;
+        self.notify(Level::Success, "The device settings of the merged file are now in the rebind file");
     }
 
     /// Opens the Unmatched Rebinds box for the rebinds of actions the profile lacks, as Tools >
@@ -2313,6 +2356,7 @@ impl CtrlXrefApp {
             extra: None,
             more: None,
             highlight: None,
+            monospace: false,
             width: 760.,
         });
     }
@@ -2350,6 +2394,7 @@ impl CtrlXrefApp {
             extra: None,
             more: None,
             highlight: Some("Star Citizen"),
+            monospace: false,
             width: 560.,
         });
     }
@@ -2462,6 +2507,7 @@ impl CtrlXrefApp {
             DialogAction::DiscardThen(after) => self.proceed(after),
             DialogAction::ClearEmptyBindings(device) => self.clear_empty_column(&device),
             DialogAction::MergeOutsideChanges => self.merge_outside_changes(),
+            DialogAction::UseMergedDevices(source) => self.use_merged_devices(&source),
             DialogAction::SaveWorkingCopy => self.save_working_copy(),
             DialogAction::ReloadOutsideChanges => {
                 if let Some(path) = self.rebind_path() {
@@ -2670,7 +2716,11 @@ impl CtrlXrefApp {
                 ui.add_space(8.);
                 ScrollArea::vertical().max_height(420.).auto_shrink([false, true]).show(ui, |ui| {
                     for line in &dialog.list {
-                        ui.label(line);
+                        if dialog.monospace {
+                            ui.label(RichText::new(line).monospace());
+                        } else {
+                            ui.label(line);
+                        }
                     }
                 });
             }
@@ -3294,6 +3344,60 @@ fn working_copy_path(path: &Path) -> PathBuf {
         .expect("a free name")
 }
 
+/// Warns that the opened rebind file lacks the `missing` device settings that a file exported
+/// from the game has, so it was probably made some other way.
+/// Shows the devices of the rebind file `root` just opened from `path`, one line per
+/// `<options>` and `<deviceoptions>` element, so the user sees which devices the file is for.
+/// When it lacks some of those the game writes into every exported rebind file, it warns that
+/// the file was probably made some other way, naming the missing ones.
+fn opened_devices_dialog(path: &Path, root: &Element) -> Dialog {
+    let lines = device_option_lines(root);
+    let missing = missing_device_options(root);
+    let file = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+    let found = if lines.is_empty() {
+        format!("{file} has no device settings at all.")
+    } else {
+        format!("{file} has device settings for these devices:")
+    };
+    let mut dialog = if missing.is_empty() {
+        let mut dialog = Dialog::warning("Devices in the rebind file", found);
+        dialog.warning = false;
+        dialog
+    } else {
+        let message = format!(
+            "{file} lacks these device settings, which the game writes into every rebind file it \
+             exports:\n\n{}\n\n\
+             It was probably not exported from the game, so the game may not set up your devices as \
+             intended. Merging a rebind file exported from the game offers to take its device \
+             settings.\n\n{found}",
+            missing.join("\n")
+        );
+        Dialog::warning("Device settings missing", message)
+    };
+    dialog.list = lines;
+    dialog.monospace = true;
+    dialog.width = 640.;
+    dialog
+}
+
+/// Shows the `<options>` device settings of the merged rebind file `other`, at `path`, and asks
+/// whether to use them, with its other device settings, in the open rebind file.
+fn merged_devices_prompt(path: &Path, other: &Element) -> Dialog {
+    let message = format!(
+        "{} has the device settings of a rebind file exported from the game, for the devices below.\n\n\
+         Use the devices from the merged file? Its <options>, <deviceoptions> and header <devices> \
+         replace those of the open rebind file, and are saved with its actionmaps. Ctrl+Z undoes this.",
+        path.display()
+    );
+    let mut dialog = Dialog::warning("Use devices from merged file?", message);
+    dialog.warning = false;
+    dialog.list = device_option_lines(other);
+    dialog.monospace = true;
+    dialog.width = 640.;
+    dialog.confirm = Some(("Use These Devices", "Keep Current", DialogAction::UseMergedDevices(Box::new(other.clone()))));
+    dialog
+}
+
 /// Explains that an empty rebind unbinds the action's default `device` binding, and asks
 /// whether to clear those of `actions` and so bring their defaults back.
 fn clear_empty_warning(device: &str, actions: Vec<String>) -> Dialog {
@@ -3667,7 +3771,7 @@ fn count_elements(element: &Element) -> usize {
 mod tests {
     use super::{
         AfterPrompt, DialogAction, CellStyle, DEFAULT_COLUMN, DEVICES, Rebinds, TableRow, action_key, actionmap_tree, action_paths, actionmap_item, count_elements, readable_name,
-        find_actionmaps, is_current_rebind, parse_tree_id, read_rebinds,
+        find_actionmaps, is_current_rebind, missing_device_options, parse_tree_id, read_rebinds,
         strings_candidates,
         table_rows, tree_id, xml_doc,
     };
@@ -3847,6 +3951,9 @@ mod tests {
 
     /// A running app, with no window, with a profile and a rebind file from a new temp folder
     /// of its own, which it returns with the rebind file's path.
+    /// The device settings of a rebind file exported from the game.
+    const EXPORTED_DEVICES: &str = r#"<options type="keyboard" instance="1"/><options type="gamepad" instance="1"/><options type="joystick" instance="1" Product="Stick"/><deviceoptions name="Mouse"/>"#;
+
     fn app_with_rebinds(test: &str) -> (super::CtrlXrefApp, PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("ctrlxref-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3855,13 +3962,19 @@ mod tests {
         std::fs::write(&profile, r#"<p><actionmap name="m"><action name="a" keyboard="kb1_a"/><action name="b"/></actionmap></p>"#)
             .unwrap();
         let rebind = dir.join("rebinds.xml");
-        std::fs::write(&rebind, r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_x"/></action></actionmap></ActionMaps>"#)
-            .unwrap();
+        std::fs::write(
+            &rebind,
+            format!(r#"<ActionMaps>{EXPORTED_DEVICES}<actionmap name="m"><action name="a"><rebind input="kb1_x"/></action></actionmap></ActionMaps>"#),
+        )
+        .unwrap();
         let mut app = super::CtrlXrefApp::new(None, None, None, &eframe::egui::Context::default());
         app.startup_profile = None;
         app.open_path(profile);
         app.open_rebind_path(rebind.clone());
         assert!(app.toasts.iter().all(|toast| toast.level == super::Level::Success), "{:?}", app.toasts.len());
+        let devices = app.dialogs.pop().expect("the devices of the opened file");
+        assert!(!devices.warning && devices.list.len() == 4, "{}", devices.message);
+        assert!(app.dialogs.is_empty());
         (app, dir, rebind)
     }
 
@@ -4214,6 +4327,86 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_rebind_file_without_device_settings_warns() {
+        let (mut app, dir, rebind) = app_with_rebinds("devices-missing");
+        assert!(app.dialogs.is_empty());
+        std::fs::write(
+            &rebind,
+            r#"<ActionMaps><options type="keyboard"/><actionmap name="m"><action name="a"><rebind input="kb1_x"/></action></actionmap></ActionMaps>"#,
+        )
+        .unwrap();
+        app.open_rebind_path(rebind);
+        let dialog = app.dialogs.pop().expect("a warning");
+        assert!(dialog.warning && dialog.confirm.is_none());
+        for missing in [r#"<options type="gamepad">"#, r#"<options type="joystick">"#, r#"<deviceoptions name="Mouse">"#] {
+            assert!(dialog.message.contains(missing), "{}", dialog.message);
+        }
+        assert_eq!(dialog.list, [r#"<options type="keyboard"/>"#]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn show_current_devices_warns_without_a_rebind_file() {
+        let mut app = super::CtrlXrefApp::new(None, None, None, &eframe::egui::Context::default());
+        app.startup_profile = None;
+        app.show_current_devices();
+        let dialog = app.dialogs.pop().expect("a warning");
+        assert!(dialog.warning && dialog.title == "No devices");
+    }
+
+    #[test]
+    fn merging_a_file_with_device_settings_offers_them() {
+        let (mut app, dir, rebind) = app_with_rebinds("devices-merge");
+        std::fs::write(&rebind, r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_x"/></action></actionmap></ActionMaps>"#)
+            .unwrap();
+        app.open_rebind_path(rebind);
+        app.dialogs.clear();
+        app.show_current_devices();
+        let shown = app.dialogs.pop().expect("the current devices");
+        assert!(shown.warning && shown.list.is_empty(), "{}", shown.message);
+
+        let other = dir.join("other.xml");
+        let xml = format!(
+            r#"<ActionMaps><CustomisationUIHeader label="o"><devices><joystick instance="1"/></devices></CustomisationUIHeader>{EXPORTED_DEVICES}<actionmap name="m"><action name="a"><rebind input="kb1_y"/></action></actionmap></ActionMaps>"#
+        );
+        std::fs::write(&other, xml).unwrap();
+        app.merge_rebind_path(&other);
+        let dialog = app.dialogs.pop().expect("a question");
+        assert_eq!(
+            dialog.list,
+            [
+                r#"<options type="keyboard" instance="1"/>"#,
+                r#"<options type="gamepad" instance="1"/>"#,
+                r#"<options type="joystick" instance="1" Product="Stick"/>"#,
+                r#"<deviceoptions name="Mouse"/>"#,
+            ]
+        );
+        let Some((_, _, action)) = dialog.confirm else {
+            panic!("no confirm button");
+        };
+        let before = app.undo.0.len();
+        app.run_dialog_action(action);
+        assert_eq!(app.undo.0.len(), before + 1);
+        let root = app.document.as_ref().unwrap().rebind_root.as_ref().unwrap();
+        assert!(missing_device_options(root).is_empty());
+        let xml = xml_doc::to_string(root).unwrap();
+        assert!(xml.contains("<joystick instance=\"1\""), "{xml}");
+        assert!(xml.contains("kb1_y"), "{xml}");
+        // File > Show Current Devices now shows the devices taken from the merged file.
+        app.dialogs.clear();
+        app.show_current_devices();
+        let shown = app.dialogs.pop().expect("the current devices");
+        assert!(!shown.warning && shown.confirm.is_none());
+        assert_eq!(shown.list.len(), 4);
+        assert!(shown.list[2].contains(r#"Product="Stick""#));
+
+        app.undo_change();
+        let root = app.document.as_ref().unwrap().rebind_root.as_ref().unwrap();
+        assert_eq!(missing_device_options(root).len(), 4);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn a_merge_turns_save_off_until_it_is_undone_or_another_file_is_opened() {
         let (mut app, dir, rebind) = app_with_rebinds("merge-save");
         assert!(app.can_save());
@@ -4242,7 +4435,7 @@ mod tests {
     /// Writes the rebind file as another program would, with action `a` bound to `input`.
     fn write_outside(rebind: &Path, input: &str) {
         let xml = format!(
-            r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="{input}"/></action></actionmap></ActionMaps>"#
+            r#"<ActionMaps>{EXPORTED_DEVICES}<actionmap name="m"><action name="a"><rebind input="{input}"/></action></actionmap></ActionMaps>"#
         );
         std::fs::write(rebind, xml).unwrap();
     }
@@ -4491,6 +4684,9 @@ mod tests {
     fn without_changes_files_close_and_open_right_away() {
         let (mut app, dir, rebind) = app_with_rebinds("no-prompt");
         app.unless_unsaved(AfterPrompt::OpenRebind(rebind));
+        // Only the opened file's devices, no question about unsaved changes.
+        let devices = app.dialogs.pop().expect("the devices of the opened file");
+        assert!(devices.confirm.is_none() && devices.title == "Devices in the rebind file");
         assert!(app.dialogs.is_empty());
         app.unless_unsaved(AfterPrompt::CloseFile);
         assert!(app.dialogs.is_empty());

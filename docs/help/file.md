@@ -176,6 +176,18 @@ gets the new name.
 The name suggested for the file is the original name with `_copy` added. After this,
 **Save Rebind File** still writes the original file, not the copy.
 
+## Show Current Devices
+
+Shows the devices the open rebind file will be saved with: one line per `<options>` and
+`<deviceoptions>` element, like
+`<options type="keyboard" instance="1" Product="Keyboard  {6F1D2B61-D5A0-11CF-BFC7-444553540000}"/>`.
+This is the same list that opening a rebind file shows. After **Use These Devices** in a merge,
+it lists the merged file's devices, so you can check what you picked before saving.
+
+A rebind file exported from the game has keyboard, gamepad and joystick `<options>` and a Mouse
+`<deviceoptions>`. When any of them is missing, the list comes with a warning naming the missing
+ones. When no rebind file is open, a warning says there is no device list to show.
+
 ## Create Blank Rebind File...
 
 Writes a rebind file that clears **every** binding of the open profile, for starting your

@@ -38,6 +38,7 @@ ctrlXref does not identify as a [Star Citizen](https://robertsspaceindustries.co
 - The Star Citizen game version and the ctrlXref version are shown in the menu bar, beside the theme selector.
 - Notice when the open rebind file is changed by another program, like the game's control editor. With unsaved changes, merge the other program's changes into yours or save yours as a working copy to merge later.
 - Opening or Merging a rebind file with "orphaned" action names shows a warning, and its **Review...** button (or **Tools > Resolve Unmatched Rebinds...**) opens a resolver modal dialog. As the dialog opens, a .err text file is automatically saved next to the rebind file (usually under your `StarCitizen\LIVE\user\client\0\controls\mappings\`), and each decision on how to handle a missing/renamed action is added to it. Check the file later if any of the control bindings are now mapped to faulty actions.
+- Opening a rebind file lists its devices, one line per `<options>` and `<deviceoptions>` element. If it lacks any of the device settings the game writes into every exported rebind file (`<options type="keyboard">`, `<options type="gamepad">`, `<options type="joystick">` and `<deviceoptions name="Mouse">`), the list comes with a warning naming the missing ones, as the file was probably not exported from the game. Merging a rebind file that has them lists its `<options>` and `<deviceoptions>` lines (like `<options type="keyboard" instance="1" Product="Keyboard  {6F1D2B61-D5A0-11CF-BFC7-444553540000}"/>`), so you can see which devices they are, and asks whether to use the merged file's devices; if so, its `<options>`, `<deviceoptions>` and header `<devices>` replace those of the open rebind file and are saved with it (Ctrl+Z undoes this). **File > Show Current Devices** shows the same list for the open rebind file at any time, so you can check the devices before saving; it warns when the list is incomplete or no rebind file is open.
 
 
 ctrlXref writes only to profile rebind xml files. It never changes `Data.p4k` or `defaultProfile.xml`. Saving the current bindings `actionmaps.xml` spawns a Warning as the file will be overwritten by the game engine on configuration modifications.
@@ -186,6 +187,7 @@ StarCitizen-->>ctrlXref:
 ctrlXref->>StarCitizen: Load defaultProfile.xml
 StarCitizen-->>ctrlXref:
 ctrlXref->>StarCitizen: Map Action Names with global.ini
+
 StarCitizen-->>ctrlXref:
 ctrlXref->>ctrlXref: Build / Update Ui Default ActionMaps tree and Actions Table
 ctrlXref->>ctrlXref: Update Actiona Default From Data.p4k R/O Column data
