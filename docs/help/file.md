@@ -184,9 +184,15 @@ Shows the devices the open rebind file will be saved with: one line per `<option
 This is the same list that opening a rebind file shows. After **Use These Devices** in a merge,
 it lists the merged file's devices, so you can check what you picked before saving.
 
-A rebind file exported from the game has keyboard, gamepad and joystick `<options>` and a Mouse
-`<deviceoptions>`. When any of them is missing, the list comes with a warning naming the missing
+A rebind file exported from the game has keyboard and joystick `<options>` and a Mouse
+`<deviceoptions>`; gamepad `<options>` are optional, as the game leaves them out of some exports.
+When any of the required ones is missing, the list comes with a warning naming the missing
 ones. When no rebind file is open, a warning says there is no device list to show.
+
+**Save Rebind File** and **Save Rebind Copy As...** check the same thing first. Without valid
+device settings, a warning explains that the game controls configuration will not be able to load
+your configuration properly without device mappings, and suggests merging a rebind file with your
+preferred devices already configured. **Save Anyway** goes on saving; **Cancel** saves nothing.
 
 ## Create Blank Rebind File...
 

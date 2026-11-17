@@ -236,6 +236,11 @@ enum DialogAction {
     /// Copies the device settings of this merged rebind file into the open one, after
     /// [`merged_devices_prompt`].
     UseMergedDevices(Box<Element>),
+    /// Saves the rebind file without device settings, after [`missing_devices_save_warning`].
+    SaveRebindFileAnyway,
+    /// Saves a copy of the rebind file without device settings, after
+    /// [`missing_devices_save_warning`].
+    SaveRebindCopyAsAnyway,
 }
 
 /// The open rebind file's state before one change to it.
@@ -1733,6 +1738,30 @@ impl CtrlXrefApp {
             self.notify(Level::Warning, "After a merge, use Save Rebind Copy As to choose where to save");
             return;
         }
+        if self.warn_missing_devices(DialogAction::SaveRebindFileAnyway) {
+            return;
+        }
+        self.save_rebind_file_anyway();
+    }
+
+    /// Asks whether to save anyway when the open rebind file lacks the device settings the game
+    /// needs to load it (see [`missing_device_options`]), with `anyway` on the Save Anyway
+    /// button. Returns whether it asked.
+    fn warn_missing_devices(&mut self, anyway: DialogAction) -> bool {
+        let Some(root) = self.document.as_ref().and_then(|doc| doc.rebind_root.as_ref()) else {
+            return false;
+        };
+        let missing = missing_device_options(root);
+        if missing.is_empty() {
+            return false;
+        }
+        self.dialogs.push(missing_devices_save_warning(missing, anyway));
+        true
+    }
+
+    /// Saves the rebind file where it was opened from, whatever its device settings, after
+    /// [`Self::save_rebind_file`].
+    fn save_rebind_file_anyway(&mut self) {
         let Some(path) = self.rebind_path() else {
             return;
         };
@@ -1954,6 +1983,15 @@ impl CtrlXrefApp {
     /// profiles; [`Self::save_rebind_copy_with_label`] goes on. The open rebind file stays the
     /// one Save Rebind File writes.
     fn save_rebind_copy_as(&mut self) {
+        if self.rebind_path().is_none() || self.warn_missing_devices(DialogAction::SaveRebindCopyAsAnyway) {
+            return;
+        }
+        self.save_rebind_copy_as_anyway();
+    }
+
+    /// Asks for the copy's visual name, whatever the rebind file's device settings, after
+    /// [`Self::save_rebind_copy_as`].
+    fn save_rebind_copy_as_anyway(&mut self) {
         let Some(path) = self.rebind_path() else {
             return;
         };
@@ -2508,6 +2546,8 @@ impl CtrlXrefApp {
             DialogAction::ClearEmptyBindings(device) => self.clear_empty_column(&device),
             DialogAction::MergeOutsideChanges => self.merge_outside_changes(),
             DialogAction::UseMergedDevices(source) => self.use_merged_devices(&source),
+            DialogAction::SaveRebindFileAnyway => self.save_rebind_file_anyway(),
+            DialogAction::SaveRebindCopyAsAnyway => self.save_rebind_copy_as_anyway(),
             DialogAction::SaveWorkingCopy => self.save_working_copy(),
             DialogAction::ReloadOutsideChanges => {
                 if let Some(path) = self.rebind_path() {
@@ -3377,6 +3417,22 @@ fn opened_devices_dialog(path: &Path, root: &Element) -> Dialog {
     dialog.list = lines;
     dialog.monospace = true;
     dialog.width = 640.;
+    dialog
+}
+
+/// Warns, before saving, that the rebind file lacks the `missing` device settings the game needs
+/// to load it, with `anyway` on the Save Anyway button.
+fn missing_devices_save_warning(missing: Vec<String>, anyway: DialogAction) -> Dialog {
+    let message = "No valid device settings have been found or selected for this rebind file.\n\n\
+                   The game controls configuration will not be able to load your configuration \
+                   properly without device mappings. Please merge a Rebind file with your preferred \
+                   devices already configured (File > Merge Rebind File...).\n\n\
+                   Missing:"
+        .to_string();
+    let mut dialog = Dialog::warning("No device mappings", message);
+    dialog.list = missing;
+    dialog.monospace = true;
+    dialog.confirm = Some(("Save Anyway", "Cancel", anyway));
     dialog
 }
 
@@ -4338,10 +4394,42 @@ mod tests {
         app.open_rebind_path(rebind);
         let dialog = app.dialogs.pop().expect("a warning");
         assert!(dialog.warning && dialog.confirm.is_none());
-        for missing in [r#"<options type="gamepad">"#, r#"<options type="joystick">"#, r#"<deviceoptions name="Mouse">"#] {
+        for missing in [r#"<options type="joystick">"#, r#"<deviceoptions name="Mouse">"#] {
             assert!(dialog.message.contains(missing), "{}", dialog.message);
         }
+        assert!(!dialog.message.contains("gamepad"), "{}", dialog.message);
         assert_eq!(dialog.list, [r#"<options type="keyboard"/>"#]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn saving_without_device_settings_warns_first() {
+        let (mut app, dir, rebind) = app_with_rebinds("devices-save");
+        let bare = r#"<ActionMaps><actionmap name="m"><action name="a"><rebind input="kb1_x"/></action></actionmap></ActionMaps>"#;
+        std::fs::write(&rebind, bare).unwrap();
+        app.open_rebind_path(rebind.clone());
+        app.dialogs.clear();
+        edit(&mut app, 0, "keyboard", "kb1_y");
+
+        app.save_rebind_file();
+        let dialog = app.dialogs.pop().expect("a warning");
+        assert!(dialog.warning && dialog.message.contains("without device mappings"), "{}", dialog.message);
+        assert_eq!(dialog.list.len(), 3);
+        assert_eq!(std::fs::read_to_string(&rebind).unwrap(), bare, "nothing is written before the answer");
+        let Some(("Save Anyway", "Cancel", action)) = dialog.confirm else {
+            panic!("no Save Anyway / Cancel");
+        };
+        app.run_dialog_action(action);
+        assert!(std::fs::read_to_string(&rebind).unwrap().contains("kb1_y"));
+
+        app.save_rebind_copy_as();
+        assert!(app.label_prompt.is_none(), "the Visual Name box waits for the answer");
+        let dialog = app.dialogs.iter().find(|dialog| dialog.title == "No device mappings").expect("a warning");
+        let Some((_, _, action)) = dialog.confirm.clone() else {
+            panic!("no Save Anyway");
+        };
+        app.run_dialog_action(action);
+        assert!(app.label_prompt.is_some());
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -4402,7 +4490,7 @@ mod tests {
 
         app.undo_change();
         let root = app.document.as_ref().unwrap().rebind_root.as_ref().unwrap();
-        assert_eq!(missing_device_options(root).len(), 4);
+        assert_eq!(missing_device_options(root).len(), 3);
         std::fs::remove_dir_all(dir).ok();
     }
 

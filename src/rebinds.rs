@@ -1072,11 +1072,11 @@ pub fn set_copy_name(root: &mut Element, name: &str) {
 }
 
 /// The device settings a rebind file exported from the game has next to its actionmaps, as
-/// (tag, attribute, value): the keyboard, gamepad and joystick `<options>` and the mouse
-/// `<deviceoptions>`.
-pub const REQUIRED_DEVICE_OPTIONS: [(&str, &str, &str); 4] = [
+/// (tag, attribute, value): the keyboard and joystick `<options>` and the mouse
+/// `<deviceoptions>`. Gamepad `<options>` are not required: the game leaves them out of some
+/// exports.
+pub const REQUIRED_DEVICE_OPTIONS: [(&str, &str, &str); 3] = [
     ("options", "type", "keyboard"),
-    ("options", "type", "gamepad"),
     ("options", "type", "joystick"),
     ("deviceoptions", "name", "Mouse"),
 ];
@@ -1237,8 +1237,14 @@ mod tests {
             xml_doc::from_str(r#"<ActionMaps><options type="keyboard"/><actionmap name="m"/></ActionMaps>"#).unwrap();
         assert_eq!(
             missing_device_options(&partial),
-            [r#"<options type="gamepad">"#, r#"<options type="joystick">"#, r#"<deviceoptions name="Mouse">"#]
+            [r#"<options type="joystick">"#, r#"<deviceoptions name="Mouse">"#]
         );
+        // The game leaves the gamepad options out of some exports.
+        let no_gamepad = xml_doc::from_str(
+            r#"<ActionMaps><deviceoptions name="Mouse"/><options type="keyboard"/><options type="joystick"/><actionmap name="m"/></ActionMaps>"#,
+        )
+        .unwrap();
+        assert!(missing_device_options(&no_gamepad).is_empty());
         let profile = xml_doc::from_str(
             r#"<ActionMaps><ActionProfiles><options type="keyboard"/><options type="gamepad"/><options type="joystick"/><deviceoptions name="mouse"/><actionmap name="m"/></ActionProfiles></ActionMaps>"#,
         )
