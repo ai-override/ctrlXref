@@ -236,7 +236,21 @@ SC Player->>ctrlXref: Close and Exit Anyway
 ```
 
 ### Update / Merge preferred bindings sequence
+
+Preparations for merging/modification session. Connect all controllers you intend to use within the game and start 3rd party mapping applications like HidHide and JoystickGremlin etc. Make sure your devices are listed as you like them to be seen by the System and the Game later. Use tools like JoyID to reorder joystick instances if needed. 
+```mermaid
+sequenceDiagram
+    actor SC Player
+    SC Player->>System: Connect your devices you intend to use
+    SC Player->>System: Start 3rd party mapping programs etc.
+    SC Player->>Star Citizen: Start game and enter the Configuration
+    SC Player->>Star Citizen: Load a your profile or create a new clean profile
+    SC Player->>System: Save with a name you remember (Used to fetch your device instances)
+    
+```
+
 Sequence explaining one possible usage sequence in more detail. Here we assume the game version has just updated and some of your device bindings stopped working completely, or they somehow behave different than you'd expect.
+
 ```mermaid
 sequenceDiagram
 actor SC Player
@@ -250,7 +264,12 @@ Internet-->>ctrlXref:
 
 SC Player->>ctrlXref: Launch application
 
-SC Player->>ctrlXref: [Optional] Open the Current Rebind File
+SC Player->>ctrlXref: [Optional] Open the Newly created profile
+Note over ctrlXref: Mapping devices to the edited bindings profile so that it becomes usable In-game
+Note over ctrlXref: The device xml elements can also be manually pasted into some other existing profile
+Note over ctrlXref: Be extra careful not to break the xml structure if copy/pasting manually within them.
+
+SC Player->>ctrlXref: [Optional] Open or Merge the Current Rebind File
 Note over ctrlXref: Current Rebind has your most recent configuration from game-engine
 
 SC Player->>ctrlXref: [Optional] Clone Defaults to Device Columns
@@ -322,7 +341,7 @@ For all of us lazy gamers, here's the pre-built exe. No install required or even
 [Latest Release](https://github.com/ai-override/ctrlXref/releases)
 
 ## Screenshots
-- Column sorting ![Action Table Column Sorting](assets/images/ctrlXref_sorting_1387x775.jpg)
+
 - Conflict / multibinding resolving ![Conflicting Controls bindings Resolving](assets/images/ctrlXref_resolve_1387x775.jpg)
 - Column Autofill (will be refactored into the column context menu soon) ![Autofilling Unbound Keyboard Controls](assets/images/ctrlXref_autofill_1387x754.jpg)
 - Unmatched / Orphaned rebinds warning after opening an older rebind file (a GameGlass layout made for Star Citizen 4.0) ![Unmatched Rebinds Warning](assets/images/orphaned_resolve1.png)
@@ -331,10 +350,12 @@ For all of us lazy gamers, here's the pre-built exe. No install required or even
 - Deleting with `*` wildcard(s) ![Delete using wildcard * character](assets/images/wildcard_delete.png)
 - Cloning default bindings to a rebind column ![Clone Default bindings to column](assets/images/clone_to_jsx.png)
 - Changing Joystick numbers ![Change Joystick jsx_ to jsy_](assets/images/change_jsx_.png)
-
+- Opening Rebind xml including the device options ![Device options Found in rebind.xml](assets/images/merge_with_devices.png)
+- File | Show Current Devices (The devices currently in the rebind .xml that would be saved)![Devices Currentlyy mapped and saved with the bindings](assets/images/show_current_devices.png)
+- Example Rebind xml file header block with the device options ![Example xml of the saved rebind xml file](assets/images/profile_xml_header_block.png)
 
 > ## TODO
-> - [ ] Update / improve the integrated Help documentation (ongoing).
+> - [x] Update / improve the integrated Help documentation (ongoing).
 > - [ ] Improve the column editing features (maybe quick swap 'kb1_y | kb1_alt+y' <-> 'kb1_alt+y | kb1_y').
 > - [x] Add clear column with warning message to the column context menu.
 > - [x] Column delete all with wildcards like: kb\* mo1_\* \*x \*maxis\* js2_\* 
